@@ -588,7 +588,25 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
       showToast('Actualizado', 'ok');
     } else {
       const nuevo = { ...form, stock: stockTotal, stockTienda, stockAlmacen, pep: form.compraCUP || 0, pepUSD: form.compraUSD || 0, creado: Date.now() } as Producto;
-      await dbAdd('productos', nuevo);
+      const productoId = await dbAdd('productos', nuevo);
+      
+      // Si tiene stock, crear un lote automáticamente
+      if (stockTotal > 0) {
+        await dbAdd('lotesCompra', {
+          productoId,
+          cantidad: stockTotal,
+          cantidadRestante: stockTotal,
+          precioCompraCUP: form.compraCUP || 0,
+          precioCompraUSD: form.compraUSD || 0,
+          precioVentaCUP: form.ventaCUP || 0,
+          precioVentaUSD: form.ventaUSD || 0,
+          fecha: Date.now(),
+          proveedor: 'Inicial',
+          nota: 'Stock inicial al crear producto',
+          destino: stockTienda > 0 ? 'tienda' : 'almacen'
+        } as LoteCompra);
+      }
+      
       showToast('Creado', 'ok');
     }
     setModal(false); load();
@@ -785,7 +803,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
               <p className="text-xs" style={{ color: 'var(--text2)' }}>Total invertido en lotes activos: <strong>{fmt(totalInvertido)} CUP</strong></p>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Fecha</th><th>Proveedor</th><th>Cant.</th><th>Rest.</th><th>Compra CUP</th><th>Compra USD</th><th>Venta CUP</th><th>Venta USD</th><th>Destino</th><th>Inversión</th></tr></thead>
+                  <thead><tr><th>Fecha</th><th>Proveedor</th><th>Cant.</th><th>Rest.</th><th>Compra CUP</th><th>Compra USD</th><th>Venta CUP</th><th>Venta USD</th><th>Destino</th><th>Inversión</th><th></th></tr></thead>
                   <tbody>
                     {lotesProducto.map(l => (
                       <tr key={l.id}>
@@ -799,6 +817,24 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
                         <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(l.precioVentaUSD || lotesModal.ventaUSD)}</td>
                         <td>{l.destino === 'tienda' ? '🏪' : '📦'}</td>
                         <td className="font-semibold">{fmt(l.cantidadRestante * l.precioCompraCUP)}</td>
+                        <td>
+                          <button 
+                            className="btn btn-ghost btn-sm" 
+                            onClick={async () => {
+                              const nuevoPrecioVentaCUP = prompt(`Precio de venta CUP para este lote:`, l.precioVentaCUP.toString());
+                              const nuevoPrecioVentaUSD = prompt(`Precio de venta USD para este lote:`, l.precioVentaUSD.toString());
+                              if (nuevoPrecioVentaCUP !== null && nuevoPrecioVentaUSD !== null) {
+                                await dbPut('lotesCompra', {
+                                  ...l,
+                                  precioVentaCUP: parseFloat(nuevoPrecioVentaCUP) || 0,
+                                  precioVentaUSD: parseFloat(nuevoPrecioVentaUSD) || 0
+                                });
+                                showToast('Lote actualizado', 'ok');
+                                load();
+                              }
+                            }}
+                          >✏️</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1064,12 +1100,13 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
 
   const addToCart = (p: Producto) => {
     const stockDisponible = p.stockTienda || 0;
-    const ex = cart.find(c => c.productoId === p.id);
     
     // Buscar el lote más antiguo con stock restante para este producto (FIFO)
     const lotesProducto = lotes
       .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
       .sort((a, b) => a.fecha - b.fecha);
+    
+    if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
     
     // Determinar precio de venta: usar el del lote más antiguo si existe, sino usar el del producto
     let precioVentaCUP = p.ventaCUP;
@@ -1084,21 +1121,41 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       loteId = loteAntiguo.id;
     }
     
+    // Verificar si ya existe en el carrito con el mismo lote
+    const ex = cart.find(c => c.productoId === p.id && c.loteId === loteId);
+    
     if (ex) {
       if (ex.cantidad + 1 > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-      setCart(cart.map(c => c.productoId === p.id ? { ...c, cantidad: c.cantidad + 1, subtotalCUP: (c.cantidad + 1) * c.precioCUP, subtotalUSD: (c.cantidad + 1) * c.precioUSD } : c));
+      setCart(cart.map(c => c.productoId === p.id && c.loteId === loteId ? { ...c, cantidad: c.cantidad + 1, subtotalCUP: (c.cantidad + 1) * c.precioCUP, subtotalUSD: (c.cantidad + 1) * c.precioUSD } : c));
     } else {
-      if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
-      setCart([...cart, { productoId: p.id!, nombre: p.nombre, codigo: p.codigo, cantidad: 1, unidad: p.unidad, precioCUP: precioVentaCUP, precioUSD: precioVentaUSD, subtotalCUP: precioVentaCUP, subtotalUSD: precioVentaUSD, pep: p.pep, pepUSD: p.pepUSD, loteId }]);
+      // Agregar nuevo item al carrito con información del lote
+      const loteInfo = lotesProducto.length > 0 ? ` (Lote ${lotesProducto[0].id})` : '';
+      setCart([...cart, { 
+        productoId: p.id!, 
+        nombre: p.nombre + loteInfo, 
+        codigo: p.codigo, 
+        cantidad: 1, 
+        unidad: p.unidad, 
+        precioCUP: precioVentaCUP, 
+        precioUSD: precioVentaUSD, 
+        subtotalCUP: precioVentaCUP, 
+        subtotalUSD: precioVentaUSD, 
+        pep: p.pep, 
+        pepUSD: p.pepUSD, 
+        loteId 
+      }]);
     }
   };
 
-  const updateQty = (pid: number, qty: number) => {
+  const updateQty = (pid: number, qty: number, loteId?: number) => {
     const p = productos.find(pr => pr.id === pid);
     const stockDisponible = p ? (p.stockTienda || 0) : 0;
     if (p && qty > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-    if (qty <= 0) { setCart(cart.filter(c => c.productoId !== pid)); return; }
-    setCart(cart.map(c => c.productoId === pid ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
+    if (qty <= 0) { 
+      setCart(cart.filter(c => !(c.productoId === pid && c.loteId === loteId))); 
+      return; 
+    }
+    setCart(cart.map(c => c.productoId === pid && c.loteId === loteId ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
   };
 
   // Calcular subtotales según la moneda seleccionada
@@ -1296,15 +1353,33 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
             <table>
               <thead><tr><th>Producto</th><th>Código</th><th>Precio</th><th>Stock</th><th></th></tr></thead>
               <tbody>
-                {results.map(p => (
-                  <tr key={p.id} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p)}>
-                    <td className="font-medium">{p.nombre}</td>
-                    <td className="font-mono text-xs">{p.codigo}</td>
-                    <td><span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(p.ventaCUP)}</span> <span className="text-xs" style={{ color: 'var(--text2)' }}>/ {fmt(p.ventaUSD)} USD</span></td>
-                    <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
-                    <td><button className="btn btn-primary btn-sm">+ Agregar</button></td>
-                  </tr>
-                ))}
+                {results.map(p => {
+                  // Buscar el lote más antiguo para mostrar su precio
+                  const loteMasAntiguo = lotes
+                    .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
+                    .sort((a, b) => a.fecha - b.fecha)[0];
+                  
+                  const precioMostrarCUP = loteMasAntiguo?.precioVentaCUP || p.ventaCUP;
+                  const precioMostrarUSD = loteMasAntiguo?.precioVentaUSD || p.ventaUSD;
+                  const hayMultiplesLotes = lotes.filter(l => l.productoId === p.id && l.cantidadRestante > 0).length > 1;
+                  
+                  return (
+                    <tr key={p.id} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p)}>
+                      <td className="font-medium">
+                        {p.nombre}
+                        {hayMultiplesLotes && <span className="ml-1 text-xs" style={{ color: 'var(--warn)' }}>({lotes.filter(l => l.productoId === p.id && l.cantidadRestante > 0).length} lotes)</span>}
+                      </td>
+                      <td className="font-mono text-xs">{p.codigo}</td>
+                      <td>
+                        <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(precioMostrarCUP)}</span>
+                        <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(precioMostrarUSD)} USD</span>
+                        {hayMultiplesLotes && <div className="text-xs" style={{ color: 'var(--text2)' }}>Precio del lote más antiguo</div>}
+                      </td>
+                      <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
+                      <td><button className="btn btn-primary btn-sm">+ Agregar</button></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1313,20 +1388,30 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       <div className="card p-4 flex flex-col overflow-hidden">
         <h3 className="font-bold mb-2">🛒 Carrito ({cart.length})</h3>
         <div className="flex-1 overflow-auto space-y-2 mb-3">
-          {cart.map(c => (
-            <div key={c.productoId} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
+          {cart.map((c, index) => {
+            const lote = c.loteId ? lotes.find(l => l.id === c.loteId) : null;
+            return (
+            <div key={`${c.productoId}-${c.loteId}-${index}`} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{c.nombre}</p>
-                <p className="text-xs" style={{ color: 'var(--text2)' }}>{fmt(c.precioCUP)} × {c.cantidad} = {fmt(c.subtotalCUP)}</p>
+                <p className="text-xs" style={{ color: 'var(--text2)' }}>
+                  💰 {fmt(c.precioCUP)} CUP / {fmt(c.precioUSD)} USD × {c.cantidad} = <strong>{fmt(c.subtotalCUP)} CUP</strong>
+                </p>
+                {lote && (
+                  <p className="text-xs" style={{ color: 'var(--info)' }}>
+                    📦 Lote {lote.id} ({fmtDate(lote.fecha)}) - Costo: {fmt(lote.precioCompraCUP)} CUP
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-1">
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1)}>-</button>
-                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value)} />
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1)}>+</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1, c.loteId)}>-</button>
+                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value, c.loteId)} />
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1, c.loteId)}>+</button>
               </div>
-              <button className="text-red-500" onClick={() => setCart(cart.filter(x => x.productoId !== c.productoId))}>✕</button>
+              <button className="text-red-500" onClick={() => setCart(cart.filter(x => !(x.productoId === c.productoId && x.loteId === c.loteId)))}>✕</button>
             </div>
-          ))}
+            );
+          })}
         </div>
         <div className="border-t pt-3 space-y-2" style={{ borderColor: 'var(--border)' }}>
           <div className="flex justify-between items-center"><label className="text-sm">Descuento %</label><input type="number" className="input w-20 text-right" value={numVal(descuento)} onChange={e => setDescuento(e.target.value === '' ? 0 : Math.min(100, Math.max(0, +e.target.value)))} /></div>
