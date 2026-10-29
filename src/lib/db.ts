@@ -11,8 +11,8 @@ export interface Producto {
   stockTienda: number; // Stock en tienda (disponible para venta)
   stockAlmacen: number; // Stock en almacén (reserva)
   min: number; foto: string; creado: number;
-  precioFijoCUP?: boolean;
-  precioFijoUSD?: boolean;
+  // Nuevo: modo de precio automático
+  modoPrecio?: 'cup' | 'usd'; // Si es 'cup', los precios CUP son fijos. Si es 'usd', los USD son fijos y CUP se actualiza con la tasa
   loteActual?: number;
   fechaVencimiento?: number;
   codigoBarras?: string;

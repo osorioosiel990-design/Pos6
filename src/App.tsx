@@ -491,17 +491,65 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   if (filterStatus === 'low') filtered = filtered.filter(p => (p.stockTienda || 0) > 0 && (p.stockTienda || 0) <= p.min);
   if (filterStatus === 'out') filtered = filtered.filter(p => (p.stockTienda || 0) <= 0);
   if (filterStatus === 'ok') filtered = filtered.filter(p => (p.stockTienda || 0) > p.min);
+  // Nuevos filtros para productos incompletos
+  if (filterStatus === 'no-compra') filtered = filtered.filter(p => p.compraCUP === 0 && p.compraUSD === 0);
+  if (filterStatus === 'no-venta') filtered = filtered.filter(p => p.ventaCUP === 0 && p.ventaUSD === 0);
+  if (filterStatus === 'no-stock') filtered = filtered.filter(p => (p.stockTienda || 0) === 0 && (p.stockAlmacen || 0) === 0);
 
   const inversionCUP = filtered.reduce((s, p) => s + (p.stock * p.pep), 0);
   const inversionUSD = toUSD(inversionCUP, tasa);
 
-  const openNew = () => { setEditItem(null); setForm({ nombre: '', categoria: cfg.categorias?.[0] || '', unidad: cfg.unidades?.[0] || 'Unidad', compraCUP: 0, compraUSD: 0, ventaCUP: 0, ventaUSD: 0, pep: 0, pepUSD: 0, stock: 0, stockTienda: 0, stockAlmacen: 0, min: 0, foto: '', precioFijoCUP: false, precioFijoUSD: false }); setModal(true); };
+  const openNew = () => { setEditItem(null); setForm({ nombre: '', categoria: cfg.categorias?.[0] || '', unidad: cfg.unidades?.[0] || 'Unidad', compraCUP: 0, compraUSD: 0, ventaCUP: 0, ventaUSD: 0, pep: 0, pepUSD: 0, stock: 0, stockTienda: 0, stockAlmacen: 0, min: 0, foto: '', modoPrecio: 'cup' }); setModal(true); };
   const openEdit = (p: Producto) => { setEditItem(p); setForm({ ...p }); setModal(true); };
 
-  const handleVentaCUP = (val: number) => setForm(f => ({ ...f, ventaCUP: val, ventaUSD: toUSD(val, tasa) }));
-  const handleVentaUSD = (val: number) => setForm(f => ({ ...f, ventaUSD: val, ventaCUP: toCUP(val, tasa) }));
-  const handleCompraCUP = (val: number) => setForm(f => ({ ...f, compraCUP: val, compraUSD: toUSD(val, tasa) }));
-  const handleCompraUSD = (val: number) => setForm(f => ({ ...f, compraUSD: val, compraCUP: toCUP(val, tasa) }));
+  // Funciones inteligentes de precios según modoPrecio
+  const handleVentaCUP = (val: number) => {
+    setForm(f => {
+      const modo = f.modoPrecio || 'cup';
+      if (modo === 'cup') {
+        // Modo CUP: el CUP es fijo, calcular USD
+        return { ...f, ventaCUP: val, ventaUSD: toUSD(val, tasa) };
+      } else {
+        // Modo USD: el USD es fijo, no cambiar USD
+        return { ...f, ventaCUP: val };
+      }
+    });
+  };
+  
+  const handleVentaUSD = (val: number) => {
+    setForm(f => {
+      const modo = f.modoPrecio || 'cup';
+      if (modo === 'usd') {
+        // Modo USD: el USD es fijo, calcular CUP automáticamente
+        return { ...f, ventaUSD: val, ventaCUP: toCUP(val, tasa) };
+      } else {
+        // Modo CUP: el CUP es fijo, no cambiar CUP
+        return { ...f, ventaUSD: val };
+      }
+    });
+  };
+  
+  const handleCompraCUP = (val: number) => {
+    setForm(f => {
+      const modo = f.modoPrecio || 'cup';
+      if (modo === 'cup') {
+        return { ...f, compraCUP: val, compraUSD: toUSD(val, tasa) };
+      } else {
+        return { ...f, compraCUP: val };
+      }
+    });
+  };
+  
+  const handleCompraUSD = (val: number) => {
+    setForm(f => {
+      const modo = f.modoPrecio || 'cup';
+      if (modo === 'usd') {
+        return { ...f, compraUSD: val, compraCUP: toCUP(val, tasa) };
+      } else {
+        return { ...f, compraUSD: val };
+      }
+    });
+  };
 
   const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -596,7 +644,15 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
       <div className="flex flex-wrap gap-3 mb-4 items-center">
         <input className="input max-w-xs" placeholder="🔍 Buscar..." value={search} onChange={e => setSearch(e.target.value)} />
         <select className="input max-w-[150px]" value={filterCat} onChange={e => setFilterCat(e.target.value)}><option value="">Categorías</option>{(cfg.categorias || []).map((c: string) => <option key={c}>{c}</option>)}</select>
-        <select className="input max-w-[150px]" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}><option value="">Todos</option><option value="ok">Disponibles</option><option value="low">Stock bajo</option><option value="out">Agotados</option></select>
+        <select className="input max-w-[180px]" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="">Todos</option>
+          <option value="ok">Disponibles</option>
+          <option value="low">Stock bajo</option>
+          <option value="out">Agotados</option>
+          <option value="no-compra">⚠️ Sin precio compra</option>
+          <option value="no-venta">⚠️ Sin precio venta</option>
+          <option value="no-stock">⚠️ Sin inventario</option>
+        </select>
         <div className="flex gap-1 ml-auto">
           <button className={`btn btn-sm ${view === 'grid' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView('grid')}>▦</button>
           <button className={`btn btn-sm ${view === 'table' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView('table')}>☰</button>
@@ -655,9 +711,15 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           <div><label className="text-xs font-medium">Compra USD</label><input type="number" className="input" value={numVal(form.compraUSD)} onChange={e => handleCompraUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
           <div><label className="text-xs font-medium">Venta CUP</label><input type="number" className="input" value={numVal(form.ventaCUP)} onChange={e => handleVentaCUP(e.target.value === '' ? 0 : +e.target.value)} /></div>
           <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.ventaUSD)} onChange={e => handleVentaUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
-          <div className="col-span-2 flex gap-4">
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.precioFijoCUP || false} onChange={e => setForm(f => ({ ...f, precioFijoCUP: e.target.checked }))} /> Precio CUP fijo</label>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.precioFijoUSD || false} onChange={e => setForm(f => ({ ...f, precioFijoUSD: e.target.checked }))} /> Precio USD fijo</label>
+          <div className="col-span-2">
+            <label className="text-xs font-medium">Modo de Precio</label>
+            <select className="input" value={form.modoPrecio || 'cup'} onChange={e => setForm(f => ({ ...f, modoPrecio: e.target.value as 'cup' | 'usd' }))}>
+              <option value="cup">💵 Precios en CUP (fijos, no cambian con la tasa)</option>
+              <option value="usd">💵 Precios en USD (CUP se actualiza automáticamente con la tasa)</option>
+            </select>
+            <p className="text-xs mt-1" style={{ color: 'var(--text2)' }}>
+              {form.modoPrecio === 'usd' ? '📈 Al cambiar la tasa, los precios CUP se actualizarán automáticamente' : '🔒 Los precios CUP no cambiarán aunque varíe la tasa'}
+            </p>
           </div>
           <div className="col-span-2"><label className="text-xs font-medium">Foto</label><input type="file" accept="image/*" className="input" onChange={handleFoto} />{form.foto && <img src={form.foto} className="mt-2 w-20 h-20 object-cover rounded" />}</div>
         </div>
@@ -1337,7 +1399,53 @@ function Sales({ cfg }: { cfg: Record<string, any> }) {
     }
     await dbPut('ventas', { ...anularModal, estado: 'anulada' as const });
     await dbAdd('anulaciones', { ventaId: anularModal.id!, num: anularModal.num, fechaAnulacion: Date.now(), fechaOriginal: anularModal.fecha, totalCUP: anularModal.totalCUP, totalUSD: anularModal.totalUSD, motivo, detalle, estado: 'pendiente', items: anularModal.items, auditado: null } as Anulacion);
-    showToast('Venta anulada', 'ok'); setAnularModal(null); setMotivo(''); setDetalle(''); load();
+    
+    // Actualizar cierre diario de la fecha original de la venta
+    const fechaVenta = new Date(anularModal.fecha);
+    fechaVenta.setHours(0, 0, 0, 0);
+    const fechaVentaTime = fechaVenta.getTime();
+    
+    const cierresDiarios = await dbGetAll<CierreDiario>('cierresDiarios');
+    const cierreVenta = cierresDiarios.find(c => c.fecha === fechaVentaTime);
+    
+    if (cierreVenta) {
+      // Calcular costo de los items (usando PEP como aproximación)
+      let costoItemsCUP = 0;
+      let costoItemsUSD = 0;
+      for (const item of anularModal.items) {
+        costoItemsCUP += item.cantidad * item.pep;
+        costoItemsUSD += item.cantidad * item.pepUSD;
+      }
+      
+      // Restar la venta anulada del cierre
+      cierreVenta.ventasIds = cierreVenta.ventasIds.filter(id => id !== anularModal.id);
+      cierreVenta.totalVentasCUP -= anularModal.totalCUP;
+      cierreVenta.totalVentasUSD -= anularModal.totalUSD;
+      cierreVenta.costoVentasCUP -= costoItemsCUP;
+      cierreVenta.costoVentasUSD -= costoItemsUSD;
+      cierreVenta.gananciaBrutaCUP -= (anularModal.totalCUP - costoItemsCUP);
+      cierreVenta.gananciaBrutaUSD -= (anularModal.totalUSD - costoItemsUSD);
+      
+      // Restar de caja si fue pago inmediato (no crédito)
+      if (anularModal.pagos.efCUP > 0 || anularModal.pagos.tfCUP > 0) {
+        cierreVenta.cajaCUP -= (anularModal.pagos.efCUP + anularModal.pagos.tfCUP);
+        cierreVenta.efectivoCUP -= anularModal.pagos.efCUP;
+        cierreVenta.transferenciaCUP -= anularModal.pagos.tfCUP;
+      }
+      if (anularModal.pagos.efUSD > 0 || anularModal.pagos.tfUSD > 0) {
+        cierreVenta.cajaUSD -= (anularModal.pagos.efUSD + anularModal.pagos.tfUSD);
+        cierreVenta.efectivoUSD -= anularModal.pagos.efUSD;
+        cierreVenta.transferenciaUSD -= anularModal.pagos.tfUSD;
+      }
+      
+      // Restar crédito si hubo
+      cierreVenta.creditoCUP -= anularModal.pagos.pagarCUP;
+      cierreVenta.creditoUSD -= anularModal.pagos.pagarUSD;
+      
+      await dbPut('cierresDiarios', cierreVenta);
+    }
+    
+    showToast('Venta anulada y cierres actualizados', 'ok'); setAnularModal(null); setMotivo(''); setDetalle(''); load();
   };
 
   return (
@@ -2227,7 +2335,7 @@ function Expenses({ cfg }: { cfg: Record<string, any> }) {
   const [editItem, setEditItem] = useState<Gasto | null>(null);
   const [form, setForm] = useState<Partial<Gasto>>({});
   const tasa = cfg.tasa || 350;
-  const cats = ['Salarios', 'Alquiler', 'Electricidad', 'Internet', 'Combustible', 'Mantenimiento', 'Merma', 'Otros'];
+  const cats = ['Salarios', 'Alquiler', 'Electricidad', 'Internet', 'Combustible', 'Mantenimiento', 'Merma', 'Depósito', 'Otros'];
 
   const load = useCallback(async () => { setGastos(await dbGetAll<Gasto>('gastos')); }, []);
   useEffect(() => { load(); }, [load]);
@@ -2345,11 +2453,12 @@ function Settings({ cfg, refreshCfg }: { cfg: Record<string, any>; refreshCfg: (
     await setConfig('tasa', tasa);
     await dbAdd('tasas', { fecha: Date.now(), anterior: ant, nueva: tasa });
     
-    // Si está activado, actualizar precios CUP de productos no fijos
+    // Si está activado, actualizar precios CUP de productos en modo USD
     if (actualizarPrecios && ant !== tasa) {
       const productos = await dbGetAll<Producto>('productos');
       for (const p of productos) {
-        if (!p.precioFijoCUP && p.ventaUSD > 0) {
+        // Solo actualizar si el producto está en modo USD (precios regidos por el dólar)
+        if (p.modoPrecio === 'usd' && p.ventaUSD > 0) {
           await dbPut('productos', { ...p, ventaCUP: toCUP(p.ventaUSD, tasa) });
         }
       }
