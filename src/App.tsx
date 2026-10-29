@@ -7,7 +7,7 @@ import {
   getConfig, setConfig, initDefaultConfig,
   Storage, verifyMasterKey, getLicense, saveLicense, isLicenseValid, clearLicense,
   encryptData, decryptData, fmt, fmtDate, fmtDateTime, genVentaNum,
-  toUSD, toCUP, numVal, getWeekRange,
+  toUSD, toCUP, numVal, getWeekRange, exportSectionToExcel, exportSectionToCSV, importExcelToDatabase,
   type Producto, type Venta, type VentaItem, type Cliente, type Gasto, type Anulacion, type Tasa, type CierreSemanal, type CierreDiario, type Transferencia, type LoteCompra
 } from './lib/db';
 
@@ -656,6 +656,29 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
         <div className="flex gap-1 ml-auto">
           <button className={`btn btn-sm ${view === 'grid' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView('grid')}>▦</button>
           <button className={`btn btn-sm ${view === 'table' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView('table')}>☰</button>
+          <button className="btn btn-ok btn-sm" onClick={async () => {
+            const result = await exportSectionToExcel('productos', 'inventario', (p: any) => ({
+              ID: p.id, Nombre: p.nombre, Código: p.codigo, Categoría: p.categoria,
+              'Compra CUP': p.compraCUP, 'Compra USD': p.compraUSD,
+              'Venta CUP': p.ventaCUP, 'Venta USD': p.ventaUSD,
+              'PEP CUP': p.pep, 'PEP USD': p.pepUSD,
+              'Stock Tienda': p.stockTienda, 'Stock Almacén': p.stockAlmacen,
+              'Stock Total': p.stock, 'Inversión CUP': p.stock * p.pep,
+              'Inversión USD': toUSD(p.stock * p.pep, tasa)
+            }));
+            showToast(result.message, result.success ? 'ok' : 'warn');
+          }}>📊 Excel</button>
+          <button className="btn btn-info btn-sm" onClick={async () => {
+            const result = await exportSectionToCSV('productos', 'inventario', (p: any) => ({
+              id: p.id, nombre: p.nombre, codigo: p.codigo, categoria: p.categoria,
+              compraCUP: p.compraCUP, compraUSD: p.compraUSD,
+              ventaCUP: p.ventaCUP, ventaUSD: p.ventaUSD,
+              pep: p.pep, pepUSD: p.pepUSD,
+              stockTienda: p.stockTienda, stockAlmacen: p.stockAlmacen,
+              stock: p.stock
+            }));
+            showToast(result.message, result.success ? 'ok' : 'warn');
+          }}>📄 CSV</button>
           <button className="btn btn-primary btn-sm" onClick={openNew}>+ Nuevo</button>
         </div>
       </div>
@@ -1082,14 +1105,18 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     let costoTotalCUP = moneda === 'CUP' ? 0 : 0;
     let costoTotalUSD = moneda === 'USD' ? 0 : 0;
     
+    // Determinar estado de la venta
+    const esCreditoCompleto = tienePagarTarde && pagos.pagarCUP === totalCUP && pagos.pagarUSD === totalUSD;
+    const estadoVenta = esCreditoCompleto ? 'pendiente' : 'pagada';
+    
     const venta: Venta = {
       num: genVentaNum(), fecha: Date.now(), items: cart, descuento,
       totalCUP, totalUSD, pagos, clienteId,
       clienteNombre: clientes.find(c => c.id === clienteId)?.nombre || '',
-      estado: 'pagada',
+      estado: estadoVenta,
       pagarMasTardeCUP: pagos.pagarCUP, pagarMasTardeUSD: pagos.pagarUSD
     };
-    await dbAdd('ventas', venta);
+    const ventaId = await dbAdd('ventas', venta);
     
     // Descontar de stockTienda y actualizar lotes usando FIFO
     for (const item of cart) { 
@@ -1150,57 +1177,63 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     }
 
     setTicketVenta(venta); 
-    showToast(`Venta ${venta.num} | Ganancia: ${fmt(gananciaCUP)} CUP / ${fmt(gananciaUSD)} USD`, 'ok');
     
-    // Crear o actualizar cierre diario
-    const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
-    const fechaHoy = hoy.getTime();
-    
-    const cierresDiarios = await dbGetAll<CierreDiario>('cierresDiarios');
-    let cierreHoy = cierresDiarios.find(c => c.fecha === fechaHoy);
-    
-    if (cierreHoy) {
-      // Actualizar cierre existente
-      cierreHoy.ventasIds.push(venta.id!);
-      cierreHoy.totalVentasCUP += totalCUP;
-      cierreHoy.totalVentasUSD += totalUSD;
-      cierreHoy.costoVentasCUP += costoTotalCUP;
-      cierreHoy.costoVentasUSD += costoTotalUSD;
-      cierreHoy.gananciaBrutaCUP += gananciaCUP;
-      cierreHoy.gananciaBrutaUSD += gananciaUSD;
-      cierreHoy.cajaCUP += pagos.efCUP + pagos.tfCUP;
-      cierreHoy.cajaUSD += pagos.efUSD + pagos.tfUSD;
-      cierreHoy.efectivoCUP += pagos.efCUP;
-      cierreHoy.efectivoUSD += pagos.efUSD;
-      cierreHoy.transferenciaCUP += pagos.tfCUP;
-      cierreHoy.transferenciaUSD += pagos.tfUSD;
-      cierreHoy.creditoCUP += pagos.pagarCUP;
-      cierreHoy.creditoUSD += pagos.pagarUSD;
-      await dbPut('cierresDiarios', cierreHoy);
+    // Si es venta a crédito (pendiente), NO registrar en cierre diario todavía
+    if (estadoVenta === 'pendiente') {
+      showToast(`Venta ${venta.num} a crédito | Se registrará cuando el cliente abone`, 'info');
     } else {
-      // Crear nuevo cierre diario
-      const nuevoCierre: CierreDiario = {
-        fecha: fechaHoy,
-        ventasIds: [venta.id!],
-        totalVentasCUP: totalCUP,
-        totalVentasUSD: totalUSD,
-        costoVentasCUP: costoTotalCUP,
-        costoVentasUSD: costoTotalUSD,
-        gananciaBrutaCUP: gananciaCUP,
-        gananciaBrutaUSD: gananciaUSD,
-        cajaCUP: pagos.efCUP + pagos.tfCUP,
-        cajaUSD: pagos.efUSD + pagos.tfUSD,
-        efectivoCUP: pagos.efCUP,
-        efectivoUSD: pagos.efUSD,
-        transferenciaCUP: pagos.tfCUP,
-        transferenciaUSD: pagos.tfUSD,
-        creditoCUP: pagos.pagarCUP,
-        creditoUSD: pagos.pagarUSD,
-        tasaUsada: tasa,
-        creado: Date.now()
-      };
-      await dbAdd('cierresDiarios', nuevoCierre);
+      showToast(`Venta ${venta.num} | Ganancia: ${fmt(gananciaCUP)} CUP / ${fmt(gananciaUSD)} USD`, 'ok');
+      
+      // Crear o actualizar cierre diario (solo para ventas pagadas)
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+      const fechaHoy = hoy.getTime();
+      
+      const cierresDiarios = await dbGetAll<CierreDiario>('cierresDiarios');
+      let cierreHoy = cierresDiarios.find(c => c.fecha === fechaHoy);
+      
+      if (cierreHoy) {
+        // Actualizar cierre existente
+        cierreHoy.ventasIds.push(ventaId);
+        cierreHoy.totalVentasCUP += totalCUP;
+        cierreHoy.totalVentasUSD += totalUSD;
+        cierreHoy.costoVentasCUP += costoTotalCUP;
+        cierreHoy.costoVentasUSD += costoTotalUSD;
+        cierreHoy.gananciaBrutaCUP += gananciaCUP;
+        cierreHoy.gananciaBrutaUSD += gananciaUSD;
+        cierreHoy.cajaCUP += pagos.efCUP + pagos.tfCUP;
+        cierreHoy.cajaUSD += pagos.efUSD + pagos.tfUSD;
+        cierreHoy.efectivoCUP += pagos.efCUP;
+        cierreHoy.efectivoUSD += pagos.efUSD;
+        cierreHoy.transferenciaCUP += pagos.tfCUP;
+        cierreHoy.transferenciaUSD += pagos.tfUSD;
+        cierreHoy.creditoCUP += pagos.pagarCUP;
+        cierreHoy.creditoUSD += pagos.pagarUSD;
+        await dbPut('cierresDiarios', cierreHoy);
+      } else {
+        // Crear nuevo cierre diario
+        const nuevoCierre: CierreDiario = {
+          fecha: fechaHoy,
+          ventasIds: [ventaId],
+          totalVentasCUP: totalCUP,
+          totalVentasUSD: totalUSD,
+          costoVentasCUP: costoTotalCUP,
+          costoVentasUSD: costoTotalUSD,
+          gananciaBrutaCUP: gananciaCUP,
+          gananciaBrutaUSD: gananciaUSD,
+          cajaCUP: pagos.efCUP + pagos.tfCUP,
+          cajaUSD: pagos.efUSD + pagos.tfUSD,
+          efectivoCUP: pagos.efCUP,
+          efectivoUSD: pagos.efUSD,
+          transferenciaCUP: pagos.tfCUP,
+          transferenciaUSD: pagos.tfUSD,
+          creditoCUP: pagos.pagarCUP,
+          creditoUSD: pagos.pagarUSD,
+          tasaUsada: tasa,
+          creado: Date.now()
+        };
+        await dbAdd('cierresDiarios', nuevoCierre);
+      }
     }
     
     setCart([]); setDescuento(0); setPagos({ efCUP: 0, tfCUP: 0, pagarCUP: 0, efUSD: 0, tfUSD: 0, pagarUSD: 0 }); setClienteId(null); setCobrarModal(false); load();
@@ -2408,7 +2441,24 @@ function Backup({ cfg }: { cfg: Record<string, any> }) {
   return (
     <div className="space-y-6">
       <div className="card p-6"><h3 className="font-bold text-lg mb-4">📤 Exportar</h3><div className="flex flex-wrap gap-3"><button className="btn btn-primary" onClick={exportJSON}>📦 JSON Cifrado</button><button className="btn btn-ok" onClick={exportExcel}>📊 Excel Completo</button></div></div>
-      <div className="card p-6"><h3 className="font-bold text-lg mb-4">📥 Importar</h3><label className="btn btn-info cursor-pointer">📦 Restaurar JSON {importing && '...'}<input type="file" accept=".json" className="hidden" onChange={importJSON} disabled={importing} /></label></div>
+      <div className="card p-6"><h3 className="font-bold text-lg mb-4">📥 Importar</h3>
+        <div className="flex flex-wrap gap-3">
+          <label className="btn btn-info cursor-pointer">📦 Restaurar JSON {importing && '...'}<input type="file" accept=".json" className="hidden" onChange={importJSON} disabled={importing} /></label>
+          <label className="btn btn-ok cursor-pointer">📊 Importar Excel (reemplaza todos los datos)<input type="file" accept=".xlsx,.xls" className="hidden" onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            if (!confirm('⚠️ ¿Importar Excel? Se reemplazarán TODOS los datos de la base de datos.')) return;
+            try {
+              const results = await importExcelToDatabase(file);
+              showToast(`Importado: ${results.map(r => `${r.sheet} (${r.count})`).join(', ')}`, 'ok');
+              window.location.reload();
+            } catch (err) {
+              showToast('Error al importar: ' + (err as Error).message, 'err');
+            }
+            e.target.value = '';
+          }} /></label>
+        </div>
+      </div>
       <div className="card p-6" style={{ borderColor: 'var(--err)' }}><h3 className="font-bold text-lg mb-4" style={{ color: 'var(--err)' }}>⚠️ Zona Peligrosa</h3><button className="btn btn-err" onClick={clearAll}>🗑️ Borrar Todo</button></div>
     </div>
   );

@@ -100,7 +100,7 @@ export interface Venta {
     efCUP: number; tfCUP: number; pagarCUP: number;
     efUSD: number; tfUSD: number; pagarUSD: number;
   };
-  clienteId: number | null; clienteNombre: string; estado: 'pagada' | 'anulada';
+  clienteId: number | null; clienteNombre: string; estado: 'pagada' | 'anulada' | 'pendiente';
   pagarMasTardeCUP: number; pagarMasTardeUSD: number;
 }
 
@@ -365,4 +365,77 @@ export function getWeekRange(date: Date = new Date()) {
   end.setDate(start.getDate() + 5);
   end.setHours(23, 59, 59, 999);
   return { start: start.getTime(), end: end.getTime(), startStr: fmtDate(start.getTime()), endStr: fmtDate(end.getTime()) };
+}
+
+// Funciones auxiliares para exportar/importar
+export async function exportSectionToExcel(section: string, filename: string, transform?: (item: any) => any) {
+  const XLSX = await import('xlsx');
+  const data = await dbGetAll(section);
+  
+  if (data.length === 0) {
+    return { success: false, message: 'No hay datos para exportar' };
+  }
+  
+  const wb = XLSX.utils.book_new();
+  const processedData = transform ? data.map(transform) : data;
+  const ws = XLSX.utils.json_to_sheet(processedData);
+  XLSX.utils.book_append_sheet(wb, ws, section);
+  XLSX.writeFile(wb, `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`);
+  
+  return { success: true, message: `${section} exportado correctamente` };
+}
+
+export async function exportSectionToCSV(section: string, filename: string, transform?: (item: any) => any) {
+  const data = await dbGetAll(section);
+  
+  if (data.length === 0) {
+    return { success: false, message: 'No hay datos para exportar' };
+  }
+  
+  const processedData = transform ? data.map(transform) : data;
+  const headers = Object.keys(processedData[0]);
+  const csv = [
+    headers.join(','),
+    ...processedData.map(row => 
+      headers.map(h => {
+        const val = row[h];
+        if (typeof val === 'string' && val.includes(',')) return `"${val}"`;
+        if (Array.isArray(val)) return `"${JSON.stringify(val)}"`;
+        return val ?? '';
+      }).join(',')
+    )
+  ].join('\n');
+  
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${filename}_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  return { success: true, message: `${section} exportado correctamente` };
+}
+
+export async function importExcelToDatabase(file: File) {
+  const XLSX = await import('xlsx');
+  const data = await file.arrayBuffer();
+  const wb = XLSX.read(data);
+  
+  const results: { sheet: string; count: number }[] = [];
+  
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(ws);
+    
+    if (jsonData.length > 0) {
+      await dbClear(sheetName);
+      for (const item of jsonData) {
+        await dbAdd(sheetName, item);
+      }
+      results.push({ sheet: sheetName, count: jsonData.length });
+    }
+  }
+  
+  return results;
 }
