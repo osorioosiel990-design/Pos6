@@ -495,6 +495,9 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   if (filterStatus === 'no-compra') filtered = filtered.filter(p => p.compraCUP === 0 && p.compraUSD === 0);
   if (filterStatus === 'no-venta') filtered = filtered.filter(p => p.ventaCUP === 0 && p.ventaUSD === 0);
   if (filterStatus === 'no-stock') filtered = filtered.filter(p => (p.stockTienda || 0) === 0 && (p.stockAlmacen || 0) === 0);
+  // Filtros por modo de precio
+  if (filterStatus === 'modo-cup') filtered = filtered.filter(p => p.modoPrecio === 'cup' || !p.modoPrecio);
+  if (filterStatus === 'modo-usd') filtered = filtered.filter(p => p.modoPrecio === 'usd');
 
   const inversionCUP = filtered.reduce((s, p) => s + (p.stock * p.pep), 0);
   const inversionUSD = toUSD(inversionCUP, tasa);
@@ -652,6 +655,8 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           <option value="no-compra">⚠️ Sin precio compra</option>
           <option value="no-venta">⚠️ Sin precio venta</option>
           <option value="no-stock">⚠️ Sin inventario</option>
+          <option value="modo-cup">💵 Modo CUP (precios fijos)</option>
+          <option value="modo-usd">💵 Modo USD (se actualiza con tasa)</option>
         </select>
         <div className="flex gap-1 ml-auto">
           <button className={`btn btn-sm ${view === 'grid' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView('grid')}>▦</button>
@@ -700,7 +705,11 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
             <div key={p.id} className="product-card">
               {p.foto ? <img src={p.foto} alt={p.nombre} /> : <div style={{ height: 100, background: 'var(--bg3)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📦</div>}
               <h4 className="font-semibold text-sm mt-2 truncate">{p.nombre}</h4>
-              <p className="text-xs" style={{ color: 'var(--text2)' }}>{p.categoria}</p>
+              <p className="text-xs" style={{ color: 'var(--text2)' }}>
+                {p.categoria}
+                {p.modoPrecio === 'usd' && <span className="ml-1" title="Modo USD - Se actualiza con la tasa">💲</span>}
+                {(p.modoPrecio === 'cup' || !p.modoPrecio) && <span className="ml-1" title="Modo CUP - Precios fijos">🔒</span>}
+              </p>
               <div className="flex justify-between items-center mt-2">
                 <span className="text-sm font-bold" style={{ color: 'var(--primary)' }}>{fmt(p.ventaCUP)}</span>
                 {statusBadge(p)}
@@ -716,9 +725,11 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           ))}
         </div>
       ) : (
-        <div className="card table-wrap"><table><thead><tr><th>Producto</th><th>Cat.</th><th>🏪 Tienda</th><th>📦 Almacén</th><th>Total</th><th>PEP CUP</th><th>Venta CUP</th><th>Inv CUP</th><th>Inv USD</th><th>Lotes</th><th>Estado</th><th></th></tr></thead><tbody>{filtered.map(p => {
+        <div className="card table-wrap"><table><thead><tr><th>Modo</th><th>Producto</th><th>Cat.</th><th>🏪 Tienda</th><th>📦 Almacén</th><th>Total</th><th>PEP CUP</th><th>Venta CUP</th><th>Inv CUP</th><th>Inv USD</th><th>Lotes</th><th>Estado</th><th></th></tr></thead><tbody>{filtered.map(p => {
           const lotesProducto = lotes.filter(l => l.productoId === p.id && l.cantidadRestante > 0);
-          return (<tr key={p.id}><td className="font-medium">{p.nombre}</td><td>{p.categoria}</td><td className="font-bold" style={{ color: 'var(--ok)' }}>{p.stockTienda || 0}</td><td className="font-bold" style={{ color: 'var(--info)' }}>{p.stockAlmacen || 0}</td><td>{p.stock}</td><td>{fmt(p.pep)}</td><td>{fmt(p.ventaCUP)}</td><td>{fmt(p.stock * p.pep)}</td><td>{fmt(toUSD(p.stock * p.pep, tasa))}</td><td>{lotesProducto.length > 0 ? <button className="btn btn-info btn-sm" onClick={() => setLotesModal(p)}>{lotesProducto.length} lote{lotesProducto.length > 1 ? 's' : ''}</button> : <span className="text-xs" style={{ color: 'var(--text2)' }}>Sin lotes</span>}</td><td>{statusBadge(p)}</td><td><button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️</button> <button className="btn btn-warn btn-sm" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button> <button className="btn btn-ghost btn-sm" onClick={() => del(p)}>🗑️</button></td></tr>);
+          return (<tr key={p.id}>
+            <td>{p.modoPrecio === 'usd' ? <span title="Modo USD - Se actualiza con la tasa" className="text-lg">💲</span> : <span title="Modo CUP - Precios fijos" className="text-lg">🔒</span>}</td>
+            <td className="font-medium">{p.nombre}</td><td>{p.categoria}</td><td className="font-bold" style={{ color: 'var(--ok)' }}>{p.stockTienda || 0}</td><td className="font-bold" style={{ color: 'var(--info)' }}>{p.stockAlmacen || 0}</td><td>{p.stock}</td><td>{fmt(p.pep)}</td><td>{fmt(p.ventaCUP)}</td><td>{fmt(p.stock * p.pep)}</td><td>{fmt(toUSD(p.stock * p.pep, tasa))}</td><td>{lotesProducto.length > 0 ? <button className="btn btn-info btn-sm" onClick={() => setLotesModal(p)}>{lotesProducto.length} lote{lotesProducto.length > 1 ? 's' : ''}</button> : <span className="text-xs" style={{ color: 'var(--text2)' }}>Sin lotes</span>}</td><td>{statusBadge(p)}</td><td><button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️</button> <button className="btn btn-warn btn-sm" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button> <button className="btn btn-ghost btn-sm" onClick={() => del(p)}>🗑️</button></td></tr>);
         })}</tbody></table></div>
       )}
 
@@ -774,7 +785,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
               <p className="text-xs" style={{ color: 'var(--text2)' }}>Total invertido en lotes activos: <strong>{fmt(totalInvertido)} CUP</strong></p>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Fecha</th><th>Proveedor</th><th>Cant. Original</th><th>Restante</th><th>Precio CUP</th><th>Precio USD</th><th>Destino</th><th>Inversión</th></tr></thead>
+                  <thead><tr><th>Fecha</th><th>Proveedor</th><th>Cant.</th><th>Rest.</th><th>Compra CUP</th><th>Compra USD</th><th>Venta CUP</th><th>Venta USD</th><th>Destino</th><th>Inversión</th></tr></thead>
                   <tbody>
                     {lotesProducto.map(l => (
                       <tr key={l.id}>
@@ -784,7 +795,9 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
                         <td className="font-bold">{l.cantidadRestante}</td>
                         <td>{fmt(l.precioCompraCUP)}</td>
                         <td>{fmt(l.precioCompraUSD)}</td>
-                        <td>{l.destino === 'tienda' ? '🏪 Tienda' : '📦 Almacén'}</td>
+                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(l.precioVentaCUP || lotesModal.ventaCUP)}</td>
+                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(l.precioVentaUSD || lotesModal.ventaUSD)}</td>
+                        <td>{l.destino === 'tienda' ? '🏪' : '📦'}</td>
                         <td className="font-semibold">{fmt(l.cantidadRestante * l.precioCompraCUP)}</td>
                       </tr>
                     ))}
@@ -805,7 +818,7 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
   const [compras, setCompras] = useState<any[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, nota: '', proveedor: '', destino: 'almacen' as 'tienda' | 'almacen' });
+  const [form, setForm] = useState({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, precioVentaCUP: 0, precioVentaUSD: 0, nota: '', proveedor: '', destino: 'almacen' as 'tienda' | 'almacen' });
   const tasa = cfg.tasa || 350;
 
   const load = useCallback(async () => { setCompras(await dbGetAll('compras')); setProductos(await dbGetAll<Producto>('productos')); }, []);
@@ -834,13 +847,15 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
       newPepUSD = form.precioUnitUSD;
     }
     
-    // Crear lote de compra
+    // Crear lote de compra con precios de venta específicos
     const loteId = await dbAdd('lotesCompra', {
       productoId: producto.id!,
       cantidad: form.cantidad,
       cantidadRestante: form.cantidad,
       precioCompraCUP: form.precioUnitCUP,
       precioCompraUSD: form.precioUnitUSD,
+      precioVentaCUP: form.precioVentaCUP || producto.ventaCUP, // Usar precio del producto si no se especifica
+      precioVentaUSD: form.precioVentaUSD || producto.ventaUSD, // Usar precio del producto si no se especifica
       fecha: Date.now(),
       proveedor: form.proveedor,
       nota: form.nota,
@@ -862,7 +877,7 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
     const newStockTotal = newStockTienda + newStockAlmacen;
     await dbPut('productos', { ...producto, stock: newStockTotal, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen, pep: isNaN(newPep) ? form.precioUnitCUP : newPep, pepUSD: isNaN(newPepUSD) ? form.precioUnitUSD : newPepUSD });
     showToast(`Compra registrada en ${form.destino === 'tienda' ? 'tienda' : 'almacén'}. PEP: ${fmt(isNaN(newPep) ? form.precioUnitCUP : newPep)} CUP`, 'ok');
-    setModal(false); setForm({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, nota: '', proveedor: '', destino: 'almacen' }); load();
+    setModal(false); setForm({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, precioVentaCUP: 0, precioVentaUSD: 0, nota: '', proveedor: '', destino: 'almacen' }); load();
   };
 
   return (
@@ -882,8 +897,16 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
                 <option value="tienda">🏪 Tienda</option>
               </select>
             </div>
-            <div><label className="text-xs font-medium">Precio Unit. CUP</label><input type="number" className="input" value={numVal(form.precioUnitCUP)} onChange={e => handlePrecioCUP(e.target.value === '' ? 0 : +e.target.value)} /></div>
-            <div><label className="text-xs font-medium">Precio Unit. USD</label><input type="number" className="input" value={numVal(form.precioUnitUSD)} onChange={e => handlePrecioUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
+            <div><label className="text-xs font-medium">Precio Compra CUP</label><input type="number" className="input" value={numVal(form.precioUnitCUP)} onChange={e => handlePrecioCUP(e.target.value === '' ? 0 : +e.target.value)} /></div>
+            <div><label className="text-xs font-medium">Precio Compra USD</label><input type="number" className="input" value={numVal(form.precioUnitUSD)} onChange={e => handlePrecioUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
+          </div>
+          <div className="border-t pt-3 mt-3" style={{ borderColor: 'var(--border)' }}>
+            <p className="text-xs font-semibold mb-2" style={{ color: 'var(--primary)' }}>💰 Precio de Venta para este Lote (opcional)</p>
+            <p className="text-xs mb-3" style={{ color: 'var(--text2)' }}>Si dejas en 0, se usará el precio de venta actual del producto</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs font-medium">Venta CUP</label><input type="number" className="input" value={numVal(form.precioVentaCUP)} onChange={e => setForm(f => ({ ...f, precioVentaCUP: e.target.value === '' ? 0 : +e.target.value, precioVentaUSD: producto?.modoPrecio === 'usd' ? toUSD(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaUSD }))} /></div>
+              <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.precioVentaUSD)} onChange={e => setForm(f => ({ ...f, precioVentaUSD: e.target.value === '' ? 0 : +e.target.value, precioVentaCUP: producto?.modoPrecio === 'cup' ? toCUP(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaCUP }))} /></div>
+            </div>
           </div>
           <div><label className="text-xs font-medium">Nota</label><input className="input" value={form.nota} onChange={e => setForm(f => ({ ...f, nota: e.target.value }))} /></div>
         </div>
@@ -1017,6 +1040,7 @@ function Transfers({ cfg }: { cfg: Record<string, any> }) {
 function POS({ cfg }: { cfg: Record<string, any> }) {
   const [productos, setProductos] = useState<Producto[]>([]);
   const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [lotes, setLotes] = useState<LoteCompra[]>([]);
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<VentaItem[]>([]);
   const [descuento, setDescuento] = useState(0);
@@ -1028,7 +1052,11 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
   const [ticketVenta, setTicketVenta] = useState<Venta | null>(null);
   const tasa = cfg.tasa || 350;
 
-  const load = useCallback(async () => { setProductos(await dbGetAll<Producto>('productos')); setClientes(await dbGetAll<Cliente>('clientes')); }, []);
+  const load = useCallback(async () => { 
+    setProductos(await dbGetAll<Producto>('productos')); 
+    setClientes(await dbGetAll<Cliente>('clientes'));
+    setLotes(await dbGetAll<LoteCompra>('lotesCompra'));
+  }, []);
   useEffect(() => { load(); }, [load]);
 
   const fuse = new Fuse(productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0), { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
@@ -1037,12 +1065,31 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
   const addToCart = (p: Producto) => {
     const stockDisponible = p.stockTienda || 0;
     const ex = cart.find(c => c.productoId === p.id);
+    
+    // Buscar el lote más antiguo con stock restante para este producto (FIFO)
+    const lotesProducto = lotes
+      .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
+      .sort((a, b) => a.fecha - b.fecha);
+    
+    // Determinar precio de venta: usar el del lote más antiguo si existe, sino usar el del producto
+    let precioVentaCUP = p.ventaCUP;
+    let precioVentaUSD = p.ventaUSD;
+    let loteId: number | undefined;
+    
+    if (lotesProducto.length > 0) {
+      const loteAntiguo = lotesProducto[0];
+      // Si el lote tiene precio de venta específico, usarlo
+      if (loteAntiguo.precioVentaCUP > 0) precioVentaCUP = loteAntiguo.precioVentaCUP;
+      if (loteAntiguo.precioVentaUSD > 0) precioVentaUSD = loteAntiguo.precioVentaUSD;
+      loteId = loteAntiguo.id;
+    }
+    
     if (ex) {
       if (ex.cantidad + 1 > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
       setCart(cart.map(c => c.productoId === p.id ? { ...c, cantidad: c.cantidad + 1, subtotalCUP: (c.cantidad + 1) * c.precioCUP, subtotalUSD: (c.cantidad + 1) * c.precioUSD } : c));
     } else {
       if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
-      setCart([...cart, { productoId: p.id!, nombre: p.nombre, codigo: p.codigo, cantidad: 1, unidad: p.unidad, precioCUP: p.ventaCUP, precioUSD: p.ventaUSD, subtotalCUP: p.ventaCUP, subtotalUSD: p.ventaUSD, pep: p.pep, pepUSD: p.pepUSD }]);
+      setCart([...cart, { productoId: p.id!, nombre: p.nombre, codigo: p.codigo, cantidad: 1, unidad: p.unidad, precioCUP: precioVentaCUP, precioUSD: precioVentaUSD, subtotalCUP: precioVentaCUP, subtotalUSD: precioVentaUSD, pep: p.pep, pepUSD: p.pepUSD, loteId }]);
     }
   };
 

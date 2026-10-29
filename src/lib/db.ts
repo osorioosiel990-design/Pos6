@@ -25,6 +25,8 @@ export interface LoteCompra {
   cantidadRestante: number; // Para FIFO
   precioCompraCUP: number;
   precioCompraUSD: number;
+  precioVentaCUP: number; // Precio de venta específico para este lote
+  precioVentaUSD: number; // Precio de venta específico para este lote
   fecha: number;
   proveedor: string;
   nota: string;
