@@ -1109,86 +1109,58 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
       .sort((a, b) => a.fecha - b.fecha);
     
-    let nuevaCantidad = cantidad;
+    let cantidadRestante = cantidad;
     const nuevosItems: VentaItem[] = [];
     
     // Si hay lotes, distribuir la cantidad entre ellos usando FIFO
     if (lotesProducto.length > 0) {
       for (const lote of lotesProducto) {
-        if (nuevaCantidad <= 0) break;
+        if (cantidadRestante <= 0) break;
         
         // Cuántas unidades tomar de este lote
-        const tomarDelLote = Math.min(nuevaCantidad, lote.cantidadRestante);
+        const tomarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
         
         // Determinar precio de venta del lote
         const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
         const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
         
-        // Verificar si ya existe en el carrito con este lote
-        const ex = cart.find(c => c.productoId === p.id && c.loteId === lote.id);
-        
-        if (ex) {
-          // Actualizar cantidad del item existente
-          const nuevaCantidadItem = ex.cantidad + tomarDelLote;
-          setCart(cart.map(c => c.productoId === p.id && c.loteId === lote.id ? { 
-            ...c, 
-            cantidad: nuevaCantidadItem, 
-            subtotalCUP: nuevaCantidadItem * c.precioCUP, 
-            subtotalUSD: nuevaCantidadItem * c.precioUSD 
-          } : c));
-        } else {
-          // Crear nuevo item para este lote
-          nuevosItems.push({
-            productoId: p.id!,
-            nombre: `${p.nombre} (Lote ${lote.id})`,
-            codigo: p.codigo,
-            cantidad: tomarDelLote,
-            unidad: p.unidad,
-            precioCUP: precioVentaCUP,
-            precioUSD: precioVentaUSD,
-            subtotalCUP: tomarDelLote * precioVentaCUP,
-            subtotalUSD: tomarDelLote * precioVentaUSD,
-            pep: p.pep,
-            pepUSD: p.pepUSD,
-            loteId: lote.id
-          });
-        }
-        
-        nuevaCantidad -= tomarDelLote;
-      }
-      
-      // Agregar los nuevos items al carrito
-      if (nuevosItems.length > 0) {
-        setCart([...cart, ...nuevosItems]);
-      }
-    } else {
-      // Si no hay lotes, usar precio del producto
-      const ex = cart.find(c => c.productoId === p.id && !c.loteId);
-      
-      if (ex) {
-        const nuevaCantidadItem = ex.cantidad + cantidad;
-        setCart(cart.map(c => c.productoId === p.id && !c.loteId ? { 
-          ...c, 
-          cantidad: nuevaCantidadItem, 
-          subtotalCUP: nuevaCantidadItem * c.precioCUP, 
-          subtotalUSD: nuevaCantidadItem * c.precioUSD 
-        } : c));
-      } else {
-        setCart([...cart, {
+        // Crear nuevo item para este lote (siempre crear items separados por lote)
+        nuevosItems.push({
           productoId: p.id!,
-          nombre: p.nombre,
+          nombre: `${p.nombre} (Lote ${lote.id})`,
           codigo: p.codigo,
-          cantidad: cantidad,
+          cantidad: tomarDelLote,
           unidad: p.unidad,
-          precioCUP: p.ventaCUP,
-          precioUSD: p.ventaUSD,
-          subtotalCUP: cantidad * p.ventaCUP,
-          subtotalUSD: cantidad * p.ventaUSD,
+          precioCUP: precioVentaCUP,
+          precioUSD: precioVentaUSD,
+          subtotalCUP: tomarDelLote * precioVentaCUP,
+          subtotalUSD: tomarDelLote * precioVentaUSD,
           pep: p.pep,
           pepUSD: p.pepUSD,
-          loteId: undefined
-        }]);
+          loteId: lote.id
+        });
+        
+        cantidadRestante -= tomarDelLote;
       }
+      
+      // Agregar todos los nuevos items al carrito
+      setCart([...cart, ...nuevosItems]);
+    } else {
+      // Si no hay lotes, usar precio del producto
+      setCart([...cart, {
+        productoId: p.id!,
+        nombre: p.nombre,
+        codigo: p.codigo,
+        cantidad: cantidad,
+        unidad: p.unidad,
+        precioCUP: p.ventaCUP,
+        precioUSD: p.ventaUSD,
+        subtotalCUP: cantidad * p.ventaCUP,
+        subtotalUSD: cantidad * p.ventaUSD,
+        pep: p.pep,
+        pepUSD: p.pepUSD,
+        loteId: undefined
+      }]);
     }
   };
 
@@ -1459,7 +1431,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
                   }
                   
                   return (
-                    <tr key={p.id} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p, 1)}>
+                    <tr key={p.id} className="hover:bg-blue-50 dark:hover:bg-blue-900/20">
                       <td className="font-medium">
                         {p.nombre}
                         {hayMultiplesLotes && <span className="ml-1 text-xs" style={{ color: 'var(--warn)' }}>({lotesDisponibles.length} lotes)</span>}
@@ -1480,7 +1452,27 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
                         )}
                       </td>
                       <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
-                      <td><button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); addToCart(p, 1); }}>+ Agregar</button></td>
+                      <td>
+                        <div className="flex gap-1 items-center">
+                          <input 
+                            type="number" 
+                            className="input w-16 text-center text-xs" 
+                            min="1" 
+                            max={p.stockTienda || 0}
+                            defaultValue="1"
+                            id={`qty-${p.id}`}
+                          />
+                          <button 
+                            className="btn btn-primary btn-sm" 
+                            onClick={() => {
+                              const input = document.getElementById(`qty-${p.id}`) as HTMLInputElement;
+                              const cantidad = parseInt(input.value) || 1;
+                              addToCart(p, cantidad);
+                              input.value = '1';
+                            }}
+                          >+ Agregar</button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
