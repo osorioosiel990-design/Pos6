@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Fuse from 'fuse.js';
 import { Chart, registerables } from 'chart.js';
 import * as XLSX from 'xlsx';
@@ -854,8 +854,20 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
   const [compras, setCompras] = useState<any[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [modal, setModal] = useState(false);
+  const [searchProducto, setSearchProducto] = useState('');
   const [form, setForm] = useState({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, precioVentaCUP: 0, precioVentaUSD: 0, nota: '', proveedor: '', destino: 'almacen' as 'tienda' | 'almacen' });
   const tasa = cfg.tasa || 350;
+  
+  // Filtrar productos por búsqueda
+  const productosFiltrados = useMemo(() => {
+    if (!searchProducto.trim()) return productos;
+    const search = searchProducto.toLowerCase();
+    return productos.filter(p => 
+      p.nombre.toLowerCase().includes(search) ||
+      p.codigo.toLowerCase().includes(search) ||
+      p.categoria.toLowerCase().includes(search)
+    );
+  }, [productos, searchProducto]);
 
   const load = useCallback(async () => { setCompras(await dbGetAll('compras')); setProductos(await dbGetAll<Producto>('productos')); }, []);
   useEffect(() => { load(); }, [load]);
@@ -913,7 +925,10 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
     const newStockTotal = newStockTienda + newStockAlmacen;
     await dbPut('productos', { ...producto, stock: newStockTotal, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen, pep: isNaN(newPep) ? form.precioUnitCUP : newPep, pepUSD: isNaN(newPepUSD) ? form.precioUnitUSD : newPepUSD });
     showToast(`Compra registrada en ${form.destino === 'tienda' ? 'tienda' : 'almacén'}. PEP: ${fmt(isNaN(newPep) ? form.precioUnitCUP : newPep)} CUP`, 'ok');
-    setModal(false); setForm({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, precioVentaCUP: 0, precioVentaUSD: 0, nota: '', proveedor: '', destino: 'almacen' }); load();
+    setModal(false); 
+    setForm({ productoId: 0, cantidad: 0, precioUnitCUP: 0, precioUnitUSD: 0, precioVentaCUP: 0, precioVentaUSD: 0, nota: '', proveedor: '', destino: 'almacen' }); 
+    setSearchProducto('');
+    load();
   };
 
   return (
@@ -923,7 +938,17 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
       
       <Modal open={modal} onClose={() => setModal(false)} title="Registrar Compra">
         <div className="space-y-3">
-          <div><label className="text-xs font-medium">Producto</label><select className="input" value={form.productoId} onChange={e => setForm(f => ({ ...f, productoId: +e.target.value }))}><option value={0}>Seleccionar...</option>{productos.map(p => <option key={p.id} value={p.id}>{p.nombre} (Stock: {p.stock})</option>)}</select></div>
+          <div>
+            <label className="text-xs font-medium">Buscar Producto</label>
+            <input 
+              type="text" 
+              className="input mb-2" 
+              placeholder="Buscar por nombre, código o categoría..."
+              value={searchProducto}
+              onChange={e => setSearchProducto(e.target.value)}
+            />
+          </div>
+          <div><label className="text-xs font-medium">Producto</label><select className="input" value={form.productoId} onChange={e => setForm(f => ({ ...f, productoId: +e.target.value }))}><option value={0}>Seleccionar...</option>{productosFiltrados.map(p => <option key={p.id} value={p.id}>{p.nombre} (Stock: {p.stock})</option>)}</select></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="text-xs font-medium">Cantidad</label><input type="number" className="input" value={numVal(form.cantidad)} onChange={e => setForm(f => ({ ...f, cantidad: e.target.value === '' ? 0 : +e.target.value }))} /></div>
             <div><label className="text-xs font-medium">Proveedor</label><input className="input" value={form.proveedor} onChange={e => setForm(f => ({ ...f, proveedor: e.target.value }))} /></div>
@@ -1095,116 +1120,77 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const fuse = new Fuse(productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0), { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
-  const results = search ? fuse.search(search).slice(0, 100).map(r => r.item) : productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0).slice(0, 100);
+  // Crear lista de productos con lotes como productos separados
+  const productosConLotes = useMemo(() => {
+    const resultado: Array<Producto & { loteId?: number; loteInfo?: string }> = [];
+    
+    productos.forEach(p => {
+      if (p.ventaCUP <= 0 && p.ventaUSD <= 0) return;
+      
+      const lotesProducto = lotes
+        .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
+        .sort((a, b) => a.fecha - b.fecha);
+      
+      if (lotesProducto.length > 0) {
+        // Mostrar cada lote como producto separado
+        lotesProducto.forEach(lote => {
+          const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
+          const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
+          
+          resultado.push({
+            ...p,
+            ventaCUP: precioVentaCUP,
+            ventaUSD: precioVentaUSD,
+            stockTienda: lote.cantidadRestante,
+            loteId: lote.id,
+            loteInfo: `(Lote ${lote.id} - ${fmtDate(lote.fecha)})`
+          });
+        });
+      } else {
+        // Si no hay lotes, mostrar el producto normalmente
+        resultado.push(p);
+      }
+    });
+    
+    return resultado;
+  }, [productos, lotes]);
+  
+  const fuse = new Fuse(productosConLotes, { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
+  const results = search ? fuse.search(search).slice(0, 100).map(r => r.item) : productosConLotes.slice(0, 100);
 
-  const addToCart = (p: Producto, cantidad: number = 1) => {
+  const addToCart = (p: Producto & { loteId?: number; loteInfo?: string }) => {
     const stockDisponible = p.stockTienda || 0;
     
     if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
-    if (cantidad > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
     
-    // Buscar lotes con stock restante para este producto (FIFO)
-    const lotesProducto = lotes
-      .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
-      .sort((a, b) => a.fecha - b.fecha);
+    // Verificar si ya existe en el carrito con el mismo lote
+    const ex = cart.find(c => c.productoId === p.id && c.loteId === p.loteId);
     
-    let cantidadRestante = cantidad;
-    const nuevosItems: VentaItem[] = [];
-    const actualizacionesExistentes: { loteId: number; cantidadAgregar: number }[] = [];
-    
-    // Si hay lotes, distribuir la cantidad entre ellos usando FIFO
-    if (lotesProducto.length > 0) {
-      for (const lote of lotesProducto) {
-        if (cantidadRestante <= 0) break;
-        
-        // Cuántas unidades tomar de este lote
-        const tomarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
-        
-        // Determinar precio de venta del lote
-        const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
-        const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
-        
-        // Verificar si ya existe en el carrito con este lote
-        const ex = cart.find(c => c.productoId === p.id && c.loteId === lote.id);
-        
-        if (ex) {
-          // Marcar para actualizar después
-          actualizacionesExistentes.push({ loteId: lote.id, cantidadAgregar: tomarDelLote });
-        } else {
-          // Crear nuevo item para este lote
-          nuevosItems.push({
-            productoId: p.id!,
-            nombre: `${p.nombre} (Lote ${lote.id})`,
-            codigo: p.codigo,
-            cantidad: tomarDelLote,
-            unidad: p.unidad,
-            precioCUP: precioVentaCUP,
-            precioUSD: precioVentaUSD,
-            subtotalCUP: tomarDelLote * precioVentaCUP,
-            subtotalUSD: tomarDelLote * precioVentaUSD,
-            pep: p.pep,
-            pepUSD: p.pepUSD,
-            loteId: lote.id
-          });
-        }
-        
-        cantidadRestante -= tomarDelLote;
-      }
-      
-      // Actualizar el carrito de una sola vez
-      let nuevoCarrito = [...cart];
-      
-      // Actualizar items existentes
-      for (const act of actualizacionesExistentes) {
-        nuevoCarrito = nuevoCarrito.map(c => {
-          if (c.productoId === p.id && c.loteId === act.loteId) {
-            const nuevaCantidad = c.cantidad + act.cantidadAgregar;
-            return {
-              ...c,
-              cantidad: nuevaCantidad,
-              subtotalCUP: nuevaCantidad * c.precioCUP,
-              subtotalUSD: nuevaCantidad * c.precioUSD
-            };
-          }
-          return c;
-        });
-      }
-      
-      // Agregar nuevos items
-      if (nuevosItems.length > 0) {
-        nuevoCarrito = [...nuevoCarrito, ...nuevosItems];
-      }
-      
-      setCart(nuevoCarrito);
+    if (ex) {
+      if (ex.cantidad + 1 > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
+      setCart(cart.map(c => c.productoId === p.id && c.loteId === p.loteId ? { 
+        ...c, 
+        cantidad: c.cantidad + 1, 
+        subtotalCUP: (c.cantidad + 1) * c.precioCUP, 
+        subtotalUSD: (c.cantidad + 1) * c.precioUSD 
+      } : c));
     } else {
-      // Si no hay lotes, usar precio del producto
-      const ex = cart.find(c => c.productoId === p.id && !c.loteId);
-      
-      if (ex) {
-        const nuevaCantidadItem = ex.cantidad + cantidad;
-        setCart(cart.map(c => c.productoId === p.id && !c.loteId ? { 
-          ...c, 
-          cantidad: nuevaCantidadItem, 
-          subtotalCUP: nuevaCantidadItem * c.precioCUP, 
-          subtotalUSD: nuevaCantidadItem * c.precioUSD 
-        } : c));
-      } else {
-        setCart([...cart, {
-          productoId: p.id!,
-          nombre: p.nombre,
-          codigo: p.codigo,
-          cantidad: cantidad,
-          unidad: p.unidad,
-          precioCUP: p.ventaCUP,
-          precioUSD: p.ventaUSD,
-          subtotalCUP: cantidad * p.ventaCUP,
-          subtotalUSD: cantidad * p.ventaUSD,
-          pep: p.pep,
-          pepUSD: p.pepUSD,
-          loteId: undefined
-        }]);
-      }
+      // Agregar nuevo item al carrito
+      const nombreConLote = p.loteInfo ? `${p.nombre} ${p.loteInfo}` : p.nombre;
+      setCart([...cart, { 
+        productoId: p.id!, 
+        nombre: nombreConLote, 
+        codigo: p.codigo, 
+        cantidad: 1, 
+        unidad: p.unidad, 
+        precioCUP: p.ventaCUP, 
+        precioUSD: p.ventaUSD, 
+        subtotalCUP: p.ventaCUP, 
+        subtotalUSD: p.ventaUSD, 
+        pep: p.pep, 
+        pepUSD: p.pepUSD, 
+        loteId: p.loteId 
+      }]);
     }
   };
 
@@ -1442,73 +1428,21 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
             <table>
               <thead><tr><th>Producto</th><th>Código</th><th>Precio</th><th>Stock</th><th></th></tr></thead>
               <tbody>
-                {results.map(p => {
-                  // Buscar lotes disponibles
-                  const lotesDisponibles = lotes
-                    .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
-                    .sort((a, b) => a.fecha - b.fecha);
-                  
-                  const hayMultiplesLotes = lotesDisponibles.length > 1;
-                  
-                  // Mostrar desglose de lotes si hay múltiples
-                  let precioMostrarCUP = p.ventaCUP;
-                  let precioMostrarUSD = p.ventaUSD;
-                  
-                  if (lotesDisponibles.length > 0) {
-                    const loteMasAntiguo = lotesDisponibles[0];
-                    precioMostrarCUP = loteMasAntiguo.precioVentaCUP > 0 ? loteMasAntiguo.precioVentaCUP : p.ventaCUP;
-                    precioMostrarUSD = loteMasAntiguo.precioVentaUSD > 0 ? loteMasAntiguo.precioVentaUSD : p.ventaUSD;
-                  }
-                  
-                  // Crear texto de desglose de lotes
-                  const desgloseLotes = lotesDisponibles.map(lote => {
-                    const precioLote = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
-                    return `${lote.cantidadRestante} a ${fmt(precioLote)}`;
-                  }).join(', ');
-                  
-                  return (
-                    <tr key={p.id} className="hover:bg-blue-50 dark:hover:bg-blue-900/20">
-                      <td className="font-medium">
-                        {p.nombre}
-                        {hayMultiplesLotes && <span className="ml-1 text-xs" style={{ color: 'var(--warn)' }}>({lotesDisponibles.length} lotes)</span>}
-                      </td>
-                      <td className="font-mono text-xs">{p.codigo}</td>
-                      <td>
-                        <div>
-                          <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(precioMostrarCUP)}</span>
-                          <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(precioMostrarUSD)} USD</span>
-                        </div>
-                        {hayMultiplesLotes && (
-                          <div className="text-xs mt-1" style={{ color: 'var(--info)' }}>
-                            {desgloseLotes}
-                          </div>
-                        )}
-                      </td>
-                      <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
-                      <td>
-                        <div className="flex gap-1 items-center">
-                          <input 
-                            type="number" 
-                            className="input w-16 text-center text-xs" 
-                            min="1" 
-                            max={p.stockTienda || 0}
-                            defaultValue="1"
-                            id={`qty-${p.id}`}
-                          />
-                          <button 
-                            className="btn btn-primary btn-sm" 
-                            onClick={() => {
-                              const input = document.getElementById(`qty-${p.id}`) as HTMLInputElement;
-                              const cantidad = parseInt(input.value) || 1;
-                              addToCart(p, cantidad);
-                              input.value = '1';
-                            }}
-                          >+ Agregar</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {results.map((p, idx) => (
+                  <tr key={`${p.id}-${p.loteId || idx}`} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p)}>
+                    <td className="font-medium">
+                      {p.nombre}
+                      {p.loteInfo && <span className="ml-1 text-xs" style={{ color: 'var(--info)' }}>{p.loteInfo}</span>}
+                    </td>
+                    <td className="font-mono text-xs">{p.codigo}</td>
+                    <td>
+                      <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(p.ventaCUP)}</span>
+                      <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(p.ventaUSD)} USD</span>
+                    </td>
+                    <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
+                    <td><button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); addToCart(p); }}>+ Agregar</button></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
