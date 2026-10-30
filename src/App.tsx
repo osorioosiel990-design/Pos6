@@ -1098,81 +1098,49 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
   const fuse = new Fuse(productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0), { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
   const results = search ? fuse.search(search).slice(0, 100).map(r => r.item) : productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0).slice(0, 100);
 
-  const addToCart = (p: Producto, cantidad: number = 1) => {
+  const addToCart = (p: Producto) => {
     const stockDisponible = p.stockTienda || 0;
     
-    if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
-    if (cantidad > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-    
-    // Buscar lotes con stock restante para este producto (FIFO)
+    // Buscar el lote más antiguo con stock restante para este producto (FIFO)
     const lotesProducto = lotes
       .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
       .sort((a, b) => a.fecha - b.fecha);
     
-    let cantidadRestante = cantidad;
-    const nuevosItems: VentaItem[] = [];
+    if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
     
-    // Si hay lotes, distribuir la cantidad entre ellos usando FIFO
+    // Determinar precio de venta: usar el del lote más antiguo si existe, sino usar el del producto
+    let precioVentaCUP = p.ventaCUP;
+    let precioVentaUSD = p.ventaUSD;
+    let loteId: number | undefined;
+    
     if (lotesProducto.length > 0) {
-      for (const lote of lotesProducto) {
-        if (cantidadRestante <= 0) break;
-        
-        // Cuántas unidades tomar de este lote
-        const tomarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
-        
-        // Determinar precio de venta del lote
-        const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
-        const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
-        
-        // Crear nuevo item para este lote (siempre crear items separados por lote)
-        nuevosItems.push({
-          productoId: p.id!,
-          nombre: `${p.nombre} (Lote ${lote.id})`,
-          codigo: p.codigo,
-          cantidad: tomarDelLote,
-          unidad: p.unidad,
-          precioCUP: precioVentaCUP,
-          precioUSD: precioVentaUSD,
-          subtotalCUP: tomarDelLote * precioVentaCUP,
-          subtotalUSD: tomarDelLote * precioVentaUSD,
-          pep: p.pep,
-          pepUSD: p.pepUSD,
-          loteId: lote.id
-        });
-        
-        cantidadRestante -= tomarDelLote;
-      }
-      
-      // Agregar todos los nuevos items al carrito
-      setCart([...cart, ...nuevosItems]);
+      const loteAntiguo = lotesProducto[0];
+      // Si el lote tiene precio de venta específico, usarlo
+      if (loteAntiguo.precioVentaCUP > 0) precioVentaCUP = loteAntiguo.precioVentaCUP;
+      if (loteAntiguo.precioVentaUSD > 0) precioVentaUSD = loteAntiguo.precioVentaUSD;
+      loteId = loteAntiguo.id;
+    }
+    
+    // Verificar si ya existe en el carrito con el mismo lote
+    const ex = cart.find(c => c.productoId === p.id && c.loteId === loteId);
+    
+    if (ex) {
+      if (ex.cantidad + 1 > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
+      setCart(cart.map(c => c.productoId === p.id && c.loteId === loteId ? { ...c, cantidad: c.cantidad + 1, subtotalCUP: (c.cantidad + 1) * c.precioCUP, subtotalUSD: (c.cantidad + 1) * c.precioUSD } : c));
     } else {
-      // Si no hay lotes, usar precio del producto
-      setCart([...cart, {
-        productoId: p.id!,
-        nombre: p.nombre,
-        codigo: p.codigo,
-        cantidad: cantidad,
-        unidad: p.unidad,
-        precioCUP: p.ventaCUP,
-        precioUSD: p.ventaUSD,
-        subtotalCUP: cantidad * p.ventaCUP,
-        subtotalUSD: cantidad * p.ventaUSD,
-        pep: p.pep,
-        pepUSD: p.pepUSD,
-        loteId: undefined
-      }]);
+      if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
+      // Agregar nuevo item al carrito con información del lote
+      const loteInfo = lotesProducto.length > 0 ? ` (Lote ${lotesProducto[0].id})` : '';
+      setCart([...cart, { productoId: p.id!, nombre: p.nombre + loteInfo, codigo: p.codigo, cantidad: 1, unidad: p.unidad, precioCUP: precioVentaCUP, precioUSD: precioVentaUSD, subtotalCUP: precioVentaCUP, subtotalUSD: precioVentaUSD, pep: p.pep, pepUSD: p.pepUSD, loteId }]);
     }
   };
 
-  const updateQty = (pid: number, qty: number, loteId?: number) => {
+  const updateQty = (pid: number, qty: number) => {
     const p = productos.find(pr => pr.id === pid);
     const stockDisponible = p ? (p.stockTienda || 0) : 0;
     if (p && qty > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-    if (qty <= 0) { 
-      setCart(cart.filter(c => !(c.productoId === pid && c.loteId === loteId))); 
-      return; 
-    }
-    setCart(cart.map(c => c.productoId === pid && c.loteId === loteId ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
+    if (qty <= 0) { setCart(cart.filter(c => c.productoId !== pid)); return; }
+    setCart(cart.map(c => c.productoId === pid ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
   };
 
   // Calcular subtotales según la moneda seleccionada
@@ -1219,108 +1187,68 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     
     const tienePagarTarde = pagos.pagarCUP > 0 || pagos.pagarUSD > 0;
     if (tienePagarTarde && !clienteId) { showToast('Seleccione cliente para "Pagar más tarde"', 'err'); return; }
-    
-    // Validar stock por producto (sumando todas las cantidades del mismo producto en el carrito)
-    const productosEnCarrito: Record<number, number> = {};
-    for (const item of cart) {
-      productosEnCarrito[item.productoId] = (productosEnCarrito[item.productoId] || 0) + item.cantidad;
-    }
-    
-    for (const [productoId, cantidadTotal] of Object.entries(productosEnCarrito)) {
-      const pr = productos.find(x => x.id === Number(productoId));
-      if (!pr || (pr.stockTienda || 0) < cantidadTotal) {
-        showToast(`Stock insuficiente en tienda: ${pr?.nombre || 'Producto'}`, 'err');
-        return;
-      }
-    }
+    for (const item of cart) { const pr = productos.find(x => x.id === item.productoId); if (!pr || (pr.stockTienda || 0) < item.cantidad) { showToast(`Stock insuficiente en tienda: ${item.nombre}`, 'err'); return; } }
 
     // Calcular costo real usando FIFO (solo en la moneda seleccionada)
     const lotes = await dbGetAll<LoteCompra>('lotesCompra');
     let costoTotalCUP = moneda === 'CUP' ? 0 : 0;
     let costoTotalUSD = moneda === 'USD' ? 0 : 0;
     
-    // Determinar estado de la venta
-    const esCreditoCompleto = tienePagarTarde && pagos.pagarCUP === totalCUP && pagos.pagarUSD === totalUSD;
-    const estadoVenta = esCreditoCompleto ? 'pendiente' : 'pagada';
-    
     const venta: Venta = {
       num: genVentaNum(), fecha: Date.now(), items: cart, descuento,
       totalCUP, totalUSD, pagos, clienteId,
       clienteNombre: clientes.find(c => c.id === clienteId)?.nombre || '',
-      estado: estadoVenta,
+      estado: 'pagada',
       pagarMasTardeCUP: pagos.pagarCUP, pagarMasTardeUSD: pagos.pagarUSD
     };
     const ventaId = await dbAdd('ventas', venta);
+    venta.id = ventaId;
     
     // Descontar de stockTienda y actualizar lotes usando FIFO
-    // Primero, calcular el total a descontar por producto
-    const descuentosPorProducto: Record<number, number> = {};
-    for (const item of cart) {
-      descuentosPorProducto[item.productoId] = (descuentosPorProducto[item.productoId] || 0) + item.cantidad;
-    }
-    
-    // Descontar stock de cada producto
-    for (const [productoId, cantidadTotal] of Object.entries(descuentosPorProducto)) {
-      const pr = productos.find(x => x.id === Number(productoId))!;
-      const newStockTienda = (pr.stockTienda || 0) - cantidadTotal;
+    for (const item of cart) { 
+      const pr = productos.find(x => x.id === item.productoId)!; 
+      const newStockTienda = (pr.stockTienda || 0) - item.cantidad;
       const newStockAlmacen = pr.stockAlmacen || 0;
-      await dbPut('productos', { ...pr, stock: newStockTienda + newStockAlmacen, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen });
-    }
-    
-    // Calcular costo real usando FIFO para cada item del carrito
-    for (const item of cart) {
-      const pr = productos.find(x => x.id === item.productoId)!;
       
-      // Si el item tiene un loteId específico, usar ese lote
-      if (item.loteId) {
-        const lote = lotes.find(l => l.id === item.loteId);
-        if (lote) {
-          if (moneda === 'CUP') {
-            costoTotalCUP += item.cantidad * lote.precioCompraCUP;
-          } else {
-            const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
-            costoTotalUSD += item.cantidad * precioUSD;
-          }
-          
-          // Descontar del lote
-          lote.cantidadRestante -= item.cantidad;
-          await dbPut('lotesCompra', lote);
+      // Buscar lotes de este producto ordenados por fecha (FIFO)
+      const lotesProducto = lotes
+        .filter(l => l.productoId === item.productoId && l.cantidadRestante > 0)
+        .sort((a, b) => a.fecha - b.fecha);
+      
+      let cantidadRestante = item.cantidad;
+      
+      // Si no hay lotes, usar el PEP del producto como costo
+      if (lotesProducto.length === 0) {
+        if (moneda === 'CUP') {
+          costoTotalCUP += item.cantidad * (pr.pep || 0);
+        } else {
+          const precioUSD = pr.pepUSD > 0 ? pr.pepUSD : toUSD(pr.pep || 0, tasa);
+          costoTotalUSD += item.cantidad * precioUSD;
         }
       } else {
-        // Si no tiene loteId, usar FIFO normal
-        const lotesProducto = lotes
-          .filter(l => l.productoId === item.productoId && l.cantidadRestante > 0)
-          .sort((a, b) => a.fecha - b.fecha);
-        
-        let cantidadRestante = item.cantidad;
-        
-        if (lotesProducto.length === 0) {
+        // Si hay lotes, usar FIFO
+        for (const lote of lotesProducto) {
+          if (cantidadRestante <= 0) break;
+          
+          const usarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
+          
+          // Solo calcular costo en la moneda seleccionada
           if (moneda === 'CUP') {
-            costoTotalCUP += item.cantidad * (pr.pep || 0);
+            costoTotalCUP += usarDelLote * lote.precioCompraCUP;
           } else {
-            const precioUSD = pr.pepUSD > 0 ? pr.pepUSD : toUSD(pr.pep || 0, tasa);
-            costoTotalUSD += item.cantidad * precioUSD;
+            // Si el lote no tiene precioCompraUSD, calcularlo desde precioCompraCUP
+            const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
+            costoTotalUSD += usarDelLote * precioUSD;
           }
-        } else {
-          for (const lote of lotesProducto) {
-            if (cantidadRestante <= 0) break;
-            
-            const usarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
-            
-            if (moneda === 'CUP') {
-              costoTotalCUP += usarDelLote * lote.precioCompraCUP;
-            } else {
-              const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
-              costoTotalUSD += usarDelLote * precioUSD;
-            }
-            
-            lote.cantidadRestante -= usarDelLote;
-            cantidadRestante -= usarDelLote;
-            
-            await dbPut('lotesCompra', lote);
-          }
+          
+          lote.cantidadRestante -= usarDelLote;
+          cantidadRestante -= usarDelLote;
+          
+          await dbPut('lotesCompra', lote);
         }
       }
+      
+      await dbPut('productos', { ...pr, stock: newStockTienda + newStockAlmacen, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen }); 
     }
     
     // Calcular ganancia real
@@ -1335,63 +1263,57 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     }
 
     setTicketVenta(venta); 
+    showToast(`Venta ${venta.num} | Ganancia: ${fmt(gananciaCUP)} CUP / ${fmt(gananciaUSD)} USD`, 'ok');
     
-    // Si es venta a crédito (pendiente), NO registrar en cierre diario todavía
-    if (estadoVenta === 'pendiente') {
-      showToast(`Venta ${venta.num} a crédito | Se registrará cuando el cliente abone`, 'info');
+    // Crear o actualizar cierre diario
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const fechaHoy = hoy.getTime();
+    
+    const cierresDiarios = await dbGetAll<CierreDiario>('cierresDiarios');
+    let cierreHoy = cierresDiarios.find(c => c.fecha === fechaHoy);
+    
+    if (cierreHoy) {
+      // Actualizar cierre existente
+      cierreHoy.ventasIds.push(venta.id!);
+      cierreHoy.totalVentasCUP += totalCUP;
+      cierreHoy.totalVentasUSD += totalUSD;
+      cierreHoy.costoVentasCUP += costoTotalCUP;
+      cierreHoy.costoVentasUSD += costoTotalUSD;
+      cierreHoy.gananciaBrutaCUP += gananciaCUP;
+      cierreHoy.gananciaBrutaUSD += gananciaUSD;
+      cierreHoy.cajaCUP += pagos.efCUP + pagos.tfCUP;
+      cierreHoy.cajaUSD += pagos.efUSD + pagos.tfUSD;
+      cierreHoy.efectivoCUP += pagos.efCUP;
+      cierreHoy.efectivoUSD += pagos.efUSD;
+      cierreHoy.transferenciaCUP += pagos.tfCUP;
+      cierreHoy.transferenciaUSD += pagos.tfUSD;
+      cierreHoy.creditoCUP += pagos.pagarCUP;
+      cierreHoy.creditoUSD += pagos.pagarUSD;
+      await dbPut('cierresDiarios', cierreHoy);
     } else {
-      showToast(`Venta ${venta.num} | Ganancia: ${fmt(gananciaCUP)} CUP / ${fmt(gananciaUSD)} USD`, 'ok');
-      
-      // Crear o actualizar cierre diario (solo para ventas pagadas)
-      const hoy = new Date();
-      hoy.setHours(0, 0, 0, 0);
-      const fechaHoy = hoy.getTime();
-      
-      const cierresDiarios = await dbGetAll<CierreDiario>('cierresDiarios');
-      let cierreHoy = cierresDiarios.find(c => c.fecha === fechaHoy);
-      
-      if (cierreHoy) {
-        // Actualizar cierre existente
-        cierreHoy.ventasIds.push(ventaId);
-        cierreHoy.totalVentasCUP += totalCUP;
-        cierreHoy.totalVentasUSD += totalUSD;
-        cierreHoy.costoVentasCUP += costoTotalCUP;
-        cierreHoy.costoVentasUSD += costoTotalUSD;
-        cierreHoy.gananciaBrutaCUP += gananciaCUP;
-        cierreHoy.gananciaBrutaUSD += gananciaUSD;
-        cierreHoy.cajaCUP += pagos.efCUP + pagos.tfCUP;
-        cierreHoy.cajaUSD += pagos.efUSD + pagos.tfUSD;
-        cierreHoy.efectivoCUP += pagos.efCUP;
-        cierreHoy.efectivoUSD += pagos.efUSD;
-        cierreHoy.transferenciaCUP += pagos.tfCUP;
-        cierreHoy.transferenciaUSD += pagos.tfUSD;
-        cierreHoy.creditoCUP += pagos.pagarCUP;
-        cierreHoy.creditoUSD += pagos.pagarUSD;
-        await dbPut('cierresDiarios', cierreHoy);
-      } else {
-        // Crear nuevo cierre diario
-        const nuevoCierre: CierreDiario = {
-          fecha: fechaHoy,
-          ventasIds: [ventaId],
-          totalVentasCUP: totalCUP,
-          totalVentasUSD: totalUSD,
-          costoVentasCUP: costoTotalCUP,
-          costoVentasUSD: costoTotalUSD,
-          gananciaBrutaCUP: gananciaCUP,
-          gananciaBrutaUSD: gananciaUSD,
-          cajaCUP: pagos.efCUP + pagos.tfCUP,
-          cajaUSD: pagos.efUSD + pagos.tfUSD,
-          efectivoCUP: pagos.efCUP,
-          efectivoUSD: pagos.efUSD,
-          transferenciaCUP: pagos.tfCUP,
-          transferenciaUSD: pagos.tfUSD,
-          creditoCUP: pagos.pagarCUP,
-          creditoUSD: pagos.pagarUSD,
-          tasaUsada: tasa,
-          creado: Date.now()
-        };
-        await dbAdd('cierresDiarios', nuevoCierre);
-      }
+      // Crear nuevo cierre diario
+      const nuevoCierre: CierreDiario = {
+        fecha: fechaHoy,
+        ventasIds: [venta.id!],
+        totalVentasCUP: totalCUP,
+        totalVentasUSD: totalUSD,
+        costoVentasCUP: costoTotalCUP,
+        costoVentasUSD: costoTotalUSD,
+        gananciaBrutaCUP: gananciaCUP,
+        gananciaBrutaUSD: gananciaUSD,
+        cajaCUP: pagos.efCUP + pagos.tfCUP,
+        cajaUSD: pagos.efUSD + pagos.tfUSD,
+        efectivoCUP: pagos.efCUP,
+        efectivoUSD: pagos.efUSD,
+        transferenciaCUP: pagos.tfCUP,
+        transferenciaUSD: pagos.tfUSD,
+        creditoCUP: pagos.pagarCUP,
+        creditoUSD: pagos.pagarUSD,
+        tasaUsada: tasa,
+        creado: Date.now()
+      };
+      await dbAdd('cierresDiarios', nuevoCierre);
     }
     
     setCart([]); setDescuento(0); setPagos({ efCUP: 0, tfCUP: 0, pagarCUP: 0, efUSD: 0, tfUSD: 0, pagarUSD: 0 }); setClienteId(null); setCobrarModal(false); load();
@@ -1415,64 +1337,42 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
                   
                   const hayMultiplesLotes = lotesDisponibles.length > 1;
                   
-                  // Mostrar rango de precios si hay múltiples lotes
-                  let precioMinCUP = p.ventaCUP;
-                  let precioMaxCUP = p.ventaCUP;
-                  let precioMinUSD = p.ventaUSD;
-                  let precioMaxUSD = p.ventaUSD;
+                  // Mostrar desglose de lotes si hay múltiples
+                  let precioMostrarCUP = p.ventaCUP;
+                  let precioMostrarUSD = p.ventaUSD;
                   
                   if (lotesDisponibles.length > 0) {
-                    const preciosCUP = lotesDisponibles.map(l => l.precioVentaCUP > 0 ? l.precioVentaCUP : p.ventaCUP);
-                    const preciosUSD = lotesDisponibles.map(l => l.precioVentaUSD > 0 ? l.precioVentaUSD : p.ventaUSD);
-                    precioMinCUP = Math.min(...preciosCUP);
-                    precioMaxCUP = Math.max(...preciosCUP);
-                    precioMinUSD = Math.min(...preciosUSD);
-                    precioMaxUSD = Math.max(...preciosUSD);
+                    const loteMasAntiguo = lotesDisponibles[0];
+                    precioMostrarCUP = loteMasAntiguo.precioVentaCUP > 0 ? loteMasAntiguo.precioVentaCUP : p.ventaCUP;
+                    precioMostrarUSD = loteMasAntiguo.precioVentaUSD > 0 ? loteMasAntiguo.precioVentaUSD : p.ventaUSD;
                   }
                   
+                  // Crear texto de desglose de lotes
+                  const desgloseLotes = lotesDisponibles.map(lote => {
+                    const precioLote = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
+                    return `${lote.cantidadRestante} a ${fmt(precioLote)}`;
+                  }).join(', ');
+                  
                   return (
-                    <tr key={p.id} className="hover:bg-blue-50 dark:hover:bg-blue-900/20">
+                    <tr key={p.id} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p)}>
                       <td className="font-medium">
                         {p.nombre}
                         {hayMultiplesLotes && <span className="ml-1 text-xs" style={{ color: 'var(--warn)' }}>({lotesDisponibles.length} lotes)</span>}
                       </td>
                       <td className="font-mono text-xs">{p.codigo}</td>
                       <td>
-                        {hayMultiplesLotes ? (
-                          <>
-                            <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(precioMinCUP)} - {fmt(precioMaxCUP)}</span>
-                            <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(precioMinUSD)} - {fmt(precioMaxUSD)} USD</span>
-                            <div className="text-xs" style={{ color: 'var(--info)' }}>Rango de precios por lote</div>
-                          </>
-                        ) : (
-                          <>
-                            <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(precioMinCUP)}</span>
-                            <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(precioMinUSD)} USD</span>
-                          </>
+                        <div>
+                          <span style={{ color: 'var(--primary)' }} className="font-bold">{fmt(precioMostrarCUP)}</span>
+                          <span className="text-xs" style={{ color: 'var(--text2)' }}> / {fmt(precioMostrarUSD)} USD</span>
+                        </div>
+                        {hayMultiplesLotes && (
+                          <div className="text-xs mt-1" style={{ color: 'var(--info)' }}>
+                            {desgloseLotes}
+                          </div>
                         )}
                       </td>
                       <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
-                      <td>
-                        <div className="flex gap-1 items-center">
-                          <input 
-                            type="number" 
-                            className="input w-16 text-center text-xs" 
-                            min="1" 
-                            max={p.stockTienda || 0}
-                            defaultValue="1"
-                            id={`qty-${p.id}`}
-                          />
-                          <button 
-                            className="btn btn-primary btn-sm" 
-                            onClick={() => {
-                              const input = document.getElementById(`qty-${p.id}`) as HTMLInputElement;
-                              const cantidad = parseInt(input.value) || 1;
-                              addToCart(p, cantidad);
-                              input.value = '1';
-                            }}
-                          >+ Agregar</button>
-                        </div>
-                      </td>
+                      <td><button className="btn btn-primary btn-sm">+ Agregar</button></td>
                     </tr>
                   );
                 })}
@@ -1484,30 +1384,20 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       <div className="card p-4 flex flex-col overflow-hidden">
         <h3 className="font-bold mb-2">🛒 Carrito ({cart.length})</h3>
         <div className="flex-1 overflow-auto space-y-2 mb-3">
-          {cart.map((c, index) => {
-            const lote = c.loteId ? lotes.find(l => l.id === c.loteId) : null;
-            return (
-            <div key={`${c.productoId}-${c.loteId}-${index}`} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
+          {cart.map(c => (
+            <div key={c.productoId} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{c.nombre}</p>
-                <p className="text-xs" style={{ color: 'var(--text2)' }}>
-                  💰 {fmt(c.precioCUP)} CUP / {fmt(c.precioUSD)} USD × {c.cantidad} = <strong>{fmt(c.subtotalCUP)} CUP</strong>
-                </p>
-                {lote && (
-                  <p className="text-xs" style={{ color: 'var(--info)' }}>
-                    📦 Lote {lote.id} ({fmtDate(lote.fecha)}) - Costo: {fmt(lote.precioCompraCUP)} CUP
-                  </p>
-                )}
+                <p className="text-xs" style={{ color: 'var(--text2)' }}>{fmt(c.precioCUP)} × {c.cantidad} = {fmt(c.subtotalCUP)}</p>
               </div>
               <div className="flex items-center gap-1">
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1, c.loteId)}>-</button>
-                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value, c.loteId)} />
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1, c.loteId)}>+</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1)}>-</button>
+                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value)} />
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1)}>+</button>
               </div>
-              <button className="text-red-500" onClick={() => setCart(cart.filter(x => !(x.productoId === c.productoId && x.loteId === c.loteId)))}>✕</button>
+              <button className="text-red-500" onClick={() => setCart(cart.filter(x => x.productoId !== c.productoId))}>✕</button>
             </div>
-            );
-          })}
+          ))}
         </div>
         <div className="border-t pt-3 space-y-2" style={{ borderColor: 'var(--border)' }}>
           <div className="flex justify-between items-center"><label className="text-sm">Descuento %</label><input type="number" className="input w-20 text-right" value={numVal(descuento)} onChange={e => setDescuento(e.target.value === '' ? 0 : Math.min(100, Math.max(0, +e.target.value)))} /></div>
