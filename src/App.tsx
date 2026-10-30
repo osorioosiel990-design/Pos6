@@ -1098,49 +1098,109 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
   const fuse = new Fuse(productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0), { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
   const results = search ? fuse.search(search).slice(0, 100).map(r => r.item) : productos.filter(p => p.ventaCUP > 0 || p.ventaUSD > 0).slice(0, 100);
 
-  const addToCart = (p: Producto) => {
+  const addToCart = (p: Producto, cantidad: number = 1) => {
     const stockDisponible = p.stockTienda || 0;
     
-    // Buscar el lote más antiguo con stock restante para este producto (FIFO)
+    if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
+    if (cantidad > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
+    
+    // Buscar lotes con stock restante para este producto (FIFO)
     const lotesProducto = lotes
       .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
       .sort((a, b) => a.fecha - b.fecha);
     
-    if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
+    let cantidadRestante = cantidad;
+    const nuevosItems: VentaItem[] = [];
     
-    // Determinar precio de venta: usar el del lote más antiguo si existe, sino usar el del producto
-    let precioVentaCUP = p.ventaCUP;
-    let precioVentaUSD = p.ventaUSD;
-    let loteId: number | undefined;
-    
+    // Si hay lotes, distribuir la cantidad entre ellos usando FIFO
     if (lotesProducto.length > 0) {
-      const loteAntiguo = lotesProducto[0];
-      // Si el lote tiene precio de venta específico, usarlo
-      if (loteAntiguo.precioVentaCUP > 0) precioVentaCUP = loteAntiguo.precioVentaCUP;
-      if (loteAntiguo.precioVentaUSD > 0) precioVentaUSD = loteAntiguo.precioVentaUSD;
-      loteId = loteAntiguo.id;
-    }
-    
-    // Verificar si ya existe en el carrito con el mismo lote
-    const ex = cart.find(c => c.productoId === p.id && c.loteId === loteId);
-    
-    if (ex) {
-      if (ex.cantidad + 1 > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-      setCart(cart.map(c => c.productoId === p.id && c.loteId === loteId ? { ...c, cantidad: c.cantidad + 1, subtotalCUP: (c.cantidad + 1) * c.precioCUP, subtotalUSD: (c.cantidad + 1) * c.precioUSD } : c));
+      for (const lote of lotesProducto) {
+        if (cantidadRestante <= 0) break;
+        
+        // Cuántas unidades tomar de este lote
+        const tomarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
+        
+        // Determinar precio de venta del lote
+        const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
+        const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
+        
+        // Verificar si ya existe en el carrito con este lote
+        const ex = cart.find(c => c.productoId === p.id && c.loteId === lote.id);
+        
+        if (ex) {
+          // Actualizar cantidad del item existente
+          const nuevaCantidadItem = ex.cantidad + tomarDelLote;
+          setCart(cart.map(c => c.productoId === p.id && c.loteId === lote.id ? { 
+            ...c, 
+            cantidad: nuevaCantidadItem, 
+            subtotalCUP: nuevaCantidadItem * c.precioCUP, 
+            subtotalUSD: nuevaCantidadItem * c.precioUSD 
+          } : c));
+        } else {
+          // Crear nuevo item para este lote
+          nuevosItems.push({
+            productoId: p.id!,
+            nombre: `${p.nombre} (Lote ${lote.id})`,
+            codigo: p.codigo,
+            cantidad: tomarDelLote,
+            unidad: p.unidad,
+            precioCUP: precioVentaCUP,
+            precioUSD: precioVentaUSD,
+            subtotalCUP: tomarDelLote * precioVentaCUP,
+            subtotalUSD: tomarDelLote * precioVentaUSD,
+            pep: p.pep,
+            pepUSD: p.pepUSD,
+            loteId: lote.id
+          });
+        }
+        
+        cantidadRestante -= tomarDelLote;
+      }
+      
+      // Agregar los nuevos items al carrito
+      if (nuevosItems.length > 0) {
+        setCart([...cart, ...nuevosItems]);
+      }
     } else {
-      if (stockDisponible <= 0) { showToast('Sin stock en tienda', 'err'); return; }
-      // Agregar nuevo item al carrito con información del lote
-      const loteInfo = lotesProducto.length > 0 ? ` (Lote ${lotesProducto[0].id})` : '';
-      setCart([...cart, { productoId: p.id!, nombre: p.nombre + loteInfo, codigo: p.codigo, cantidad: 1, unidad: p.unidad, precioCUP: precioVentaCUP, precioUSD: precioVentaUSD, subtotalCUP: precioVentaCUP, subtotalUSD: precioVentaUSD, pep: p.pep, pepUSD: p.pepUSD, loteId }]);
+      // Si no hay lotes, usar precio del producto
+      const ex = cart.find(c => c.productoId === p.id && !c.loteId);
+      
+      if (ex) {
+        const nuevaCantidadItem = ex.cantidad + cantidad;
+        setCart(cart.map(c => c.productoId === p.id && !c.loteId ? { 
+          ...c, 
+          cantidad: nuevaCantidadItem, 
+          subtotalCUP: nuevaCantidadItem * c.precioCUP, 
+          subtotalUSD: nuevaCantidadItem * c.precioUSD 
+        } : c));
+      } else {
+        setCart([...cart, {
+          productoId: p.id!,
+          nombre: p.nombre,
+          codigo: p.codigo,
+          cantidad: cantidad,
+          unidad: p.unidad,
+          precioCUP: p.ventaCUP,
+          precioUSD: p.ventaUSD,
+          subtotalCUP: cantidad * p.ventaCUP,
+          subtotalUSD: cantidad * p.ventaUSD,
+          pep: p.pep,
+          pepUSD: p.pepUSD,
+          loteId: undefined
+        }]);
+      }
     }
   };
 
-  const updateQty = (pid: number, qty: number) => {
+  const updateQty = (pid: number, qty: number, loteId?: number) => {
     const p = productos.find(pr => pr.id === pid);
     const stockDisponible = p ? (p.stockTienda || 0) : 0;
     if (p && qty > stockDisponible) { showToast('Stock insuficiente en tienda', 'err'); return; }
-    if (qty <= 0) { setCart(cart.filter(c => c.productoId !== pid)); return; }
-    setCart(cart.map(c => c.productoId === pid ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
+    if (qty <= 0) { 
+      setCart(cart.filter(c => !(c.productoId === pid && c.loteId === loteId))); 
+      return; 
+    }
+    setCart(cart.map(c => c.productoId === pid && c.loteId === loteId ? { ...c, cantidad: qty, subtotalCUP: qty * c.precioCUP, subtotalUSD: qty * c.precioUSD } : c));
   };
 
   // Calcular subtotales según la moneda seleccionada
@@ -1187,7 +1247,20 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     
     const tienePagarTarde = pagos.pagarCUP > 0 || pagos.pagarUSD > 0;
     if (tienePagarTarde && !clienteId) { showToast('Seleccione cliente para "Pagar más tarde"', 'err'); return; }
-    for (const item of cart) { const pr = productos.find(x => x.id === item.productoId); if (!pr || (pr.stockTienda || 0) < item.cantidad) { showToast(`Stock insuficiente en tienda: ${item.nombre}`, 'err'); return; } }
+    
+    // Validar stock por producto (sumando todas las cantidades del mismo producto en el carrito)
+    const productosEnCarrito: Record<number, number> = {};
+    for (const item of cart) {
+      productosEnCarrito[item.productoId] = (productosEnCarrito[item.productoId] || 0) + item.cantidad;
+    }
+    
+    for (const [productoId, cantidadTotal] of Object.entries(productosEnCarrito)) {
+      const pr = productos.find(x => x.id === Number(productoId));
+      if (!pr || (pr.stockTienda || 0) < cantidadTotal) {
+        showToast(`Stock insuficiente en tienda: ${pr?.nombre || 'Producto'}`, 'err');
+        return;
+      }
+    }
 
     // Calcular costo real usando FIFO (solo en la moneda seleccionada)
     const lotes = await dbGetAll<LoteCompra>('lotesCompra');
@@ -1205,50 +1278,74 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     venta.id = ventaId;
     
     // Descontar de stockTienda y actualizar lotes usando FIFO
-    for (const item of cart) { 
-      const pr = productos.find(x => x.id === item.productoId)!; 
-      const newStockTienda = (pr.stockTienda || 0) - item.cantidad;
+    // Primero, calcular el total a descontar por producto
+    const descuentosPorProducto: Record<number, number> = {};
+    for (const item of cart) {
+      descuentosPorProducto[item.productoId] = (descuentosPorProducto[item.productoId] || 0) + item.cantidad;
+    }
+    
+    // Descontar stock de cada producto
+    for (const [productoId, cantidadTotal] of Object.entries(descuentosPorProducto)) {
+      const pr = productos.find(x => x.id === Number(productoId))!;
+      const newStockTienda = (pr.stockTienda || 0) - cantidadTotal;
       const newStockAlmacen = pr.stockAlmacen || 0;
+      await dbPut('productos', { ...pr, stock: newStockTienda + newStockAlmacen, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen });
+    }
+    
+    // Calcular costo real usando FIFO para cada item del carrito
+    for (const item of cart) {
+      const pr = productos.find(x => x.id === item.productoId)!;
       
-      // Buscar lotes de este producto ordenados por fecha (FIFO)
-      const lotesProducto = lotes
-        .filter(l => l.productoId === item.productoId && l.cantidadRestante > 0)
-        .sort((a, b) => a.fecha - b.fecha);
-      
-      let cantidadRestante = item.cantidad;
-      
-      // Si no hay lotes, usar el PEP del producto como costo
-      if (lotesProducto.length === 0) {
-        if (moneda === 'CUP') {
-          costoTotalCUP += item.cantidad * (pr.pep || 0);
-        } else {
-          const precioUSD = pr.pepUSD > 0 ? pr.pepUSD : toUSD(pr.pep || 0, tasa);
-          costoTotalUSD += item.cantidad * precioUSD;
-        }
-      } else {
-        // Si hay lotes, usar FIFO
-        for (const lote of lotesProducto) {
-          if (cantidadRestante <= 0) break;
-          
-          const usarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
-          
-          // Solo calcular costo en la moneda seleccionada
+      // Si el item tiene un loteId específico, usar ese lote
+      if (item.loteId) {
+        const lote = lotes.find(l => l.id === item.loteId);
+        if (lote) {
           if (moneda === 'CUP') {
-            costoTotalCUP += usarDelLote * lote.precioCompraCUP;
+            costoTotalCUP += item.cantidad * lote.precioCompraCUP;
           } else {
-            // Si el lote no tiene precioCompraUSD, calcularlo desde precioCompraCUP
             const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
-            costoTotalUSD += usarDelLote * precioUSD;
+            costoTotalUSD += item.cantidad * precioUSD;
           }
           
-          lote.cantidadRestante -= usarDelLote;
-          cantidadRestante -= usarDelLote;
-          
+          // Descontar del lote
+          lote.cantidadRestante -= item.cantidad;
           await dbPut('lotesCompra', lote);
         }
+      } else {
+        // Si no tiene loteId, usar FIFO normal
+        const lotesProducto = lotes
+          .filter(l => l.productoId === item.productoId && l.cantidadRestante > 0)
+          .sort((a, b) => a.fecha - b.fecha);
+        
+        let cantidadRestante = item.cantidad;
+        
+        if (lotesProducto.length === 0) {
+          if (moneda === 'CUP') {
+            costoTotalCUP += item.cantidad * (pr.pep || 0);
+          } else {
+            const precioUSD = pr.pepUSD > 0 ? pr.pepUSD : toUSD(pr.pep || 0, tasa);
+            costoTotalUSD += item.cantidad * precioUSD;
+          }
+        } else {
+          for (const lote of lotesProducto) {
+            if (cantidadRestante <= 0) break;
+            
+            const usarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
+            
+            if (moneda === 'CUP') {
+              costoTotalCUP += usarDelLote * lote.precioCompraCUP;
+            } else {
+              const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
+              costoTotalUSD += usarDelLote * precioUSD;
+            }
+            
+            lote.cantidadRestante -= usarDelLote;
+            cantidadRestante -= usarDelLote;
+            
+            await dbPut('lotesCompra', lote);
+          }
+        }
       }
-      
-      await dbPut('productos', { ...pr, stock: newStockTienda + newStockAlmacen, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen }); 
     }
     
     // Calcular ganancia real
@@ -1354,7 +1451,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
                   }).join(', ');
                   
                   return (
-                    <tr key={p.id} className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20" onClick={() => addToCart(p)}>
+                    <tr key={p.id} className="hover:bg-blue-50 dark:hover:bg-blue-900/20">
                       <td className="font-medium">
                         {p.nombre}
                         {hayMultiplesLotes && <span className="ml-1 text-xs" style={{ color: 'var(--warn)' }}>({lotesDisponibles.length} lotes)</span>}
@@ -1372,7 +1469,27 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
                         )}
                       </td>
                       <td><span className={(p.stockTienda || 0) <= p.min ? 'text-red-500 font-bold' : ''}>{p.stockTienda || 0}</span></td>
-                      <td><button className="btn btn-primary btn-sm">+ Agregar</button></td>
+                      <td>
+                        <div className="flex gap-1 items-center">
+                          <input 
+                            type="number" 
+                            className="input w-16 text-center text-xs" 
+                            min="1" 
+                            max={p.stockTienda || 0}
+                            defaultValue="1"
+                            id={`qty-${p.id}`}
+                          />
+                          <button 
+                            className="btn btn-primary btn-sm" 
+                            onClick={() => {
+                              const input = document.getElementById(`qty-${p.id}`) as HTMLInputElement;
+                              const cantidad = parseInt(input.value) || 1;
+                              addToCart(p, cantidad);
+                              input.value = '1';
+                            }}
+                          >+ Agregar</button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1385,17 +1502,17 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
         <h3 className="font-bold mb-2">🛒 Carrito ({cart.length})</h3>
         <div className="flex-1 overflow-auto space-y-2 mb-3">
           {cart.map(c => (
-            <div key={c.productoId} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
+            <div key={`${c.productoId}-${c.loteId}`} className="p-2 rounded flex items-center gap-2" style={{ background: 'var(--bg3)' }}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{c.nombre}</p>
                 <p className="text-xs" style={{ color: 'var(--text2)' }}>{fmt(c.precioCUP)} × {c.cantidad} = {fmt(c.subtotalCUP)}</p>
               </div>
               <div className="flex items-center gap-1">
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1)}>-</button>
-                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value)} />
-                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1)}>+</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad - 1, c.loteId)}>-</button>
+                <input type="number" className="input w-12 text-center text-xs" value={numVal(c.cantidad)} onChange={e => updateQty(c.productoId, e.target.value === '' ? 0 : +e.target.value, c.loteId)} />
+                <button className="btn btn-ghost btn-sm" onClick={() => updateQty(c.productoId, c.cantidad + 1, c.loteId)}>+</button>
               </div>
-              <button className="text-red-500" onClick={() => setCart(cart.filter(x => x.productoId !== c.productoId))}>✕</button>
+              <button className="text-red-500" onClick={() => setCart(cart.filter(x => !(x.productoId === c.productoId && x.loteId === c.loteId)))}>✕</button>
             </div>
           ))}
         </div>
