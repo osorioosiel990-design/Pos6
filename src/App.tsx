@@ -1111,6 +1111,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     
     let cantidadRestante = cantidad;
     const nuevosItems: VentaItem[] = [];
+    const actualizacionesExistentes: { loteId: number; cantidadAgregar: number }[] = [];
     
     // Si hay lotes, distribuir la cantidad entre ellos usando FIFO
     if (lotesProducto.length > 0) {
@@ -1128,14 +1129,8 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
         const ex = cart.find(c => c.productoId === p.id && c.loteId === lote.id);
         
         if (ex) {
-          // Actualizar cantidad del item existente
-          const nuevaCantidadItem = ex.cantidad + tomarDelLote;
-          setCart(cart.map(c => c.productoId === p.id && c.loteId === lote.id ? { 
-            ...c, 
-            cantidad: nuevaCantidadItem, 
-            subtotalCUP: nuevaCantidadItem * c.precioCUP, 
-            subtotalUSD: nuevaCantidadItem * c.precioUSD 
-          } : c));
+          // Marcar para actualizar después
+          actualizacionesExistentes.push({ loteId: lote.id, cantidadAgregar: tomarDelLote });
         } else {
           // Crear nuevo item para este lote
           nuevosItems.push({
@@ -1157,10 +1152,31 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
         cantidadRestante -= tomarDelLote;
       }
       
-      // Agregar los nuevos items al carrito
-      if (nuevosItems.length > 0) {
-        setCart([...cart, ...nuevosItems]);
+      // Actualizar el carrito de una sola vez
+      let nuevoCarrito = [...cart];
+      
+      // Actualizar items existentes
+      for (const act of actualizacionesExistentes) {
+        nuevoCarrito = nuevoCarrito.map(c => {
+          if (c.productoId === p.id && c.loteId === act.loteId) {
+            const nuevaCantidad = c.cantidad + act.cantidadAgregar;
+            return {
+              ...c,
+              cantidad: nuevaCantidad,
+              subtotalCUP: nuevaCantidad * c.precioCUP,
+              subtotalUSD: nuevaCantidad * c.precioUSD
+            };
+          }
+          return c;
+        });
       }
+      
+      // Agregar nuevos items
+      if (nuevosItems.length > 0) {
+        nuevoCarrito = [...nuevoCarrito, ...nuevosItems];
+      }
+      
+      setCart(nuevoCarrito);
     } else {
       // Si no hay lotes, usar precio del producto
       const ex = cart.find(c => c.productoId === p.id && !c.loteId);
