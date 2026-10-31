@@ -26,7 +26,7 @@ jobs:
           cache: npm
 
       - name: Instalar dependencias npm
-        run: npm ci
+        run: npm install
 
       - name: Instalar Rust toolchain estable
         uses: dtolnay/rust-toolchain@stable
