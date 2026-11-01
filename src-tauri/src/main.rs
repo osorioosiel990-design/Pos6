@@ -9,7 +9,7 @@ fn main() {
             // Solo abrir devtools en modo desarrollo
             #[cfg(debug_assertions)]
             {
-                if let Some(window) = app.get_window("main") {
+                if let Some(window) = app.get_webview_window("main") {
                     window.open_devtools();
                 }
             }

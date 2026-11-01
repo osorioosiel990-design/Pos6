@@ -1,7 +1,7 @@
 // IndexedDB + Crypto + Storage utilities for Ferretería Suárez
 
 const DB_NAME = 'ferreteriasuarez';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export interface Producto {
   id?: number; nombre: string; codigo: string; categoria: string; unidad: string;
