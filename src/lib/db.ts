@@ -268,6 +268,162 @@ export async function dbClear(store: string): Promise<void> {
   });
 }
 
+export async function migrateLegacyInventoryLots(): Promise<number> {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction(['productos', 'lotesCompra'], 'readwrite');
+    const productsStore = tx.objectStore('productos');
+    const lotsStore = tx.objectStore('lotesCompra');
+    const productsRequest = productsStore.getAll() as IDBRequest<Producto[]>;
+    const lotsRequest = lotsStore.getAll() as IDBRequest<LoteCompra[]>;
+    let products: Producto[] | undefined;
+    let lots: LoteCompra[] | undefined;
+    let createdLots = 0;
+
+    const migrate = () => {
+      if (!products || !lots) return;
+
+      const productsWithLots = new Set(lots.map(lote => lote.productoId));
+      for (const product of products) {
+        const stockTienda = Math.max(0, product.stockTienda ?? product.stock ?? 0);
+        const stockAlmacen = Math.max(0, product.stockAlmacen ?? 0);
+        if (product.stockTienda === undefined || product.stockAlmacen === undefined) {
+          productsStore.put({
+            ...product,
+            stock: stockTienda + stockAlmacen,
+            stockTienda,
+            stockAlmacen
+          });
+        }
+        if (product.id === undefined || productsWithLots.has(product.id)) continue;
+
+        const fecha = product.creado || Date.now();
+
+        for (const [destino, cantidad] of [
+          ['tienda', stockTienda],
+          ['almacen', stockAlmacen]
+        ] as const) {
+          if (cantidad <= 0) continue;
+
+          lotsStore.add({
+            productoId: product.id,
+            cantidad,
+            cantidadRestante: cantidad,
+            precioCompraCUP: product.pep || product.compraCUP || 0,
+            precioCompraUSD: product.pepUSD || product.compraUSD || 0,
+            precioVentaCUP: product.ventaCUP || 0,
+            precioVentaUSD: product.ventaUSD || 0,
+            fecha,
+            proveedor: 'Inventario anterior',
+            nota: 'Stock inicial migrado automáticamente desde el inventario existente',
+            destino
+          } satisfies LoteCompra);
+          createdLots++;
+        }
+      }
+    };
+
+    productsRequest.onsuccess = () => {
+      products = productsRequest.result;
+      migrate();
+    };
+    lotsRequest.onsuccess = () => {
+      lots = lotsRequest.result;
+      migrate();
+    };
+    productsRequest.onerror = () => reject(productsRequest.error);
+    lotsRequest.onerror = () => reject(lotsRequest.error);
+    tx.oncomplete = () => resolve(createdLots);
+    tx.onerror = () => reject(tx.error || new Error('No se pudo migrar el inventario a lotes.'));
+    tx.onabort = () => reject(tx.error || new Error('Se canceló la migración del inventario a lotes.'));
+  });
+}
+
+export async function transferProductStock(
+  transfer: Omit<Transferencia, 'id' | 'fecha' | 'creado'>
+): Promise<boolean> {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction(['productos', 'lotesCompra', 'transferencias'], 'readwrite');
+    const productsStore = tx.objectStore('productos');
+    const lotsStore = tx.objectStore('lotesCompra');
+    const transfersStore = tx.objectStore('transferencias');
+    const productRequest = productsStore.get(transfer.productoId) as IDBRequest<Producto | undefined>;
+    const lotsRequest = lotsStore.getAll() as IDBRequest<LoteCompra[]>;
+    let product: Producto | undefined;
+    let lots: LoteCompra[] | undefined;
+    let transferred = false;
+
+    const applyTransfer = () => {
+      if (product === undefined || !lots) return;
+
+      const stockTienda = product.stockTienda ?? product.stock ?? 0;
+      const stockAlmacen = product.stockAlmacen ?? 0;
+      const stockOrigen = transfer.desde === 'tienda' ? stockTienda : stockAlmacen;
+      const lotsOrigen = lots
+        .filter(lote => lote.productoId === transfer.productoId &&
+          lote.destino === transfer.desde && lote.cantidadRestante > 0)
+        .sort((a, b) => a.fecha - b.fecha);
+
+      if (stockOrigen < transfer.cantidad ||
+          lotsOrigen.reduce((total, lote) => total + lote.cantidadRestante, 0) < transfer.cantidad) {
+        return;
+      }
+
+      let cantidadPendiente = transfer.cantidad;
+      for (const lote of lotsOrigen) {
+        if (cantidadPendiente <= 0) break;
+
+        const cantidadTransferida = Math.min(cantidadPendiente, lote.cantidadRestante);
+        if (cantidadTransferida === lote.cantidadRestante) {
+          lotsStore.put({ ...lote, destino: transfer.hacia });
+        } else {
+          lotsStore.put({ ...lote, cantidadRestante: lote.cantidadRestante - cantidadTransferida });
+          const datosLote = { ...lote };
+          delete datosLote.id;
+          lotsStore.add({
+            ...datosLote,
+            cantidad: cantidadTransferida,
+            cantidadRestante: cantidadTransferida,
+            destino: transfer.hacia
+          });
+        }
+        cantidadPendiente -= cantidadTransferida;
+      }
+
+      const nuevoStockTienda = transfer.desde === 'tienda'
+        ? stockTienda - transfer.cantidad
+        : stockTienda + transfer.cantidad;
+      const nuevoStockAlmacen = transfer.desde === 'almacen'
+        ? stockAlmacen - transfer.cantidad
+        : stockAlmacen + transfer.cantidad;
+
+      productsStore.put({
+        ...product,
+        stock: nuevoStockTienda + nuevoStockAlmacen,
+        stockTienda: nuevoStockTienda,
+        stockAlmacen: nuevoStockAlmacen
+      });
+      transfersStore.add({ ...transfer, fecha: Date.now(), creado: Date.now() });
+      transferred = true;
+    };
+
+    productRequest.onsuccess = () => {
+      product = productRequest.result;
+      applyTransfer();
+    };
+    lotsRequest.onsuccess = () => {
+      lots = lotsRequest.result;
+      applyTransfer();
+    };
+    productRequest.onerror = () => reject(productRequest.error);
+    lotsRequest.onerror = () => reject(lotsRequest.error);
+    tx.oncomplete = () => resolve(transferred);
+    tx.onerror = () => reject(tx.error || new Error('No se pudo completar la transferencia.'));
+    tx.onabort = () => reject(tx.error || new Error('Se canceló la transferencia.'));
+  });
+}
+
 export async function getConfig(): Promise<Record<string, any>> {
   const items = await dbGetAll<Config>('config');
   const cfg: Record<string, any> = { ...DEFAULT_CONFIG };

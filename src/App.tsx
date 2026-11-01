@@ -3,7 +3,7 @@ import Fuse from 'fuse.js';
 import { Chart, registerables } from 'chart.js';
 import * as XLSX from 'xlsx';
 import {
-  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear,
+  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear, migrateLegacyInventoryLots, transferProductStock,
   getConfig, setConfig, initDefaultConfig,
   Storage, verifyMasterKey, getLicense, saveLicense, isLicenseValid, clearLicense,
   encryptData, decryptData, fmt, fmtDate, fmtDateTime, genVentaNum,
@@ -62,6 +62,8 @@ type Page = 'dashboard' | 'inventory' | 'purchases' | 'transfers' | 'pos' | 'sal
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const [startupError, setStartupError] = useState('');
+  const [migratedLots, setMigratedLots] = useState(0);
   const [licensed, setLicensed] = useState(false);
   const [page, setPage] = useState<Page>('dashboard');
   const [cfg, setCfg] = useState<Record<string, any>>({});
@@ -69,8 +71,26 @@ export default function App() {
 
   useEffect(() => {
     Storage.init();
-    (async () => { await openDB(); await initDefaultConfig(); const c = await getConfig(); setCfg(c); setReady(true); if (isLicenseValid()) setLicensed(true); })();
+    (async () => {
+      try {
+        await openDB();
+        setMigratedLots(await migrateLegacyInventoryLots());
+        await initDefaultConfig();
+        const c = await getConfig();
+        setCfg(c);
+        setReady(true);
+        if (isLicenseValid()) setLicensed(true);
+      } catch (error) {
+        setStartupError(error instanceof Error ? error.message : String(error));
+      }
+    })();
   }, []);
+
+  useEffect(() => {
+    if (ready && licensed && migratedLots > 0) {
+      showToast(`Inventario anterior convertido en ${migratedLots} lote(s).`, 'ok');
+    }
+  }, [ready, licensed, migratedLots]);
 
   useEffect(() => {
     let isDark = cfg.tema === 'dark' || (cfg.tema === 'auto' && (new Date().getHours() < 6 || new Date().getHours() >= 18));
@@ -91,6 +111,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [kiosco]);
 
+  if (startupError) return <div className="min-h-screen flex items-center justify-center"><div className="card max-w-lg p-6"><h1 className="text-lg font-bold text-red-600">No se pudo cargar el inventario</h1><p className="mt-2 text-sm">{startupError}</p><p className="mt-2 text-sm">Los datos no se modificaron. Cierre y vuelva a abrir la aplicación; si el error continúa, contacte soporte antes de seguir usando el POS.</p></div></div>;
   if (!ready) return <div className="min-h-screen flex items-center justify-center"><div className="text-xl">Cargando...</div></div>;
   if (!licensed) return <LicenseScreen onActivate={() => { setLicensed(true); showToast('Licencia activada', 'ok'); }} />;
 
@@ -590,12 +611,17 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
       const nuevo = { ...form, stock: stockTotal, stockTienda, stockAlmacen, pep: form.compraCUP || 0, pepUSD: form.compraUSD || 0, creado: Date.now() } as Producto;
       const productoId = await dbAdd('productos', nuevo);
       
-      // Si tiene stock, crear un lote automáticamente
-      if (stockTotal > 0) {
+      // Crear un lote inicial por cada ubicación con stock.
+      for (const [destino, cantidad] of [
+        ['tienda', stockTienda],
+        ['almacen', stockAlmacen]
+      ] as const) {
+        if (cantidad <= 0) continue;
+
         await dbAdd('lotesCompra', {
           productoId,
-          cantidad: stockTotal,
-          cantidadRestante: stockTotal,
+          cantidad,
+          cantidadRestante: cantidad,
           precioCompraCUP: form.compraCUP || 0,
           precioCompraUSD: form.compraUSD || 0,
           precioVentaCUP: form.ventaCUP || 0,
@@ -603,7 +629,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           fecha: Date.now(),
           proveedor: 'Inicial',
           nota: 'Stock inicial al crear producto',
-          destino: stockTienda > 0 ? 'tienda' : 'almacen'
+          destino
         } as LoteCompra);
       }
       
@@ -997,38 +1023,26 @@ function Transfers({ cfg }: { cfg: Record<string, any> }) {
     if (form.cantidad <= 0) { showToast('Cantidad > 0', 'err'); return; }
     if (form.desde === form.hacia) { showToast('Ubicación origen y destino deben ser diferentes', 'err'); return; }
     
-    let newStockTienda = producto.stockTienda || 0;
-    let newStockAlmacen = producto.stockAlmacen || 0;
-    
-    if (form.desde === 'tienda') {
-      if (form.cantidad > newStockTienda) { showToast('Stock insuficiente en tienda', 'err'); return; }
-      newStockTienda -= form.cantidad;
-    } else {
-      if (form.cantidad > newStockAlmacen) { showToast('Stock insuficiente en almacén', 'err'); return; }
-      newStockAlmacen -= form.cantidad;
+    const stockOrigen = form.desde === 'tienda' ? producto.stockTienda || 0 : producto.stockAlmacen || 0;
+    if (form.cantidad > stockOrigen) {
+      showToast(`Stock insuficiente en ${form.desde === 'tienda' ? 'tienda' : 'almacén'}`, 'err');
+      return;
     }
-    
-    if (form.hacia === 'tienda') {
-      newStockTienda += form.cantidad;
-    } else {
-      newStockAlmacen += form.cantidad;
-    }
-    
-    const newStockTotal = newStockTienda + newStockAlmacen;
-    
-    await dbAdd('transferencias', {
+
+    const transferida = await transferProductStock({
       productoId: producto.id!,
       productoNombre: producto.nombre,
       cantidad: form.cantidad,
       unidad: producto.unidad,
       desde: form.desde,
       hacia: form.hacia,
-      nota: form.nota,
-      fecha: Date.now(),
-      creado: Date.now()
-    } as Transferencia);
-    
-    await dbPut('productos', { ...producto, stock: newStockTotal, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen });
+      nota: form.nota
+    });
+    if (!transferida) {
+      showToast('No hay suficientes lotes disponibles en la ubicación de origen.', 'err');
+      return;
+    }
+
     showToast(`Transferencia: ${form.cantidad} ${producto.unidad} de ${form.desde === 'tienda' ? 'tienda' : 'almacén'} a ${form.hacia === 'tienda' ? 'tienda' : 'almacén'}`, 'ok');
     setModal(false);
     setForm({ productoId: 0, cantidad: 0, desde: 'almacen', hacia: 'tienda', nota: '' });
@@ -1128,8 +1142,9 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       if (p.ventaCUP <= 0 && p.ventaUSD <= 0) return;
       
       const lotesProducto = lotes
-        .filter(l => l.productoId === p.id && l.cantidadRestante > 0)
+        .filter(l => l.productoId === p.id && l.destino === 'tienda' && l.cantidadRestante > 0)
         .sort((a, b) => a.fecha - b.fecha);
+      const tieneLotesRegistrados = lotes.some(l => l.productoId === p.id);
       
       if (lotesProducto.length > 0) {
         // Mostrar cada lote como producto separado
@@ -1146,7 +1161,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
             loteInfo: `(Lote ${lote.id} - ${fmtDate(lote.fecha)})`
           });
         });
-      } else {
+      } else if (!tieneLotesRegistrados) {
         // Si no hay lotes, mostrar el producto normalmente
         resultado.push(p);
       }
@@ -1316,7 +1331,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       } else {
         // Si no tiene loteId, usar FIFO normal
         const lotesProducto = lotes
-          .filter(l => l.productoId === item.productoId && l.cantidadRestante > 0)
+          .filter(l => l.productoId === item.productoId && l.destino === 'tienda' && l.cantidadRestante > 0)
           .sort((a, b) => a.fecha - b.fecha);
         
         let cantidadRestante = item.cantidad;
@@ -1601,11 +1616,35 @@ function Sales({ cfg }: { cfg: Record<string, any> }) {
   const anular = async () => {
     if (!anularModal || !motivo || !detalle.trim()) { showToast('Complete los campos', 'err'); return; }
     const productos = await dbGetAll<Producto>('productos');
+    const lotes = await dbGetAll<LoteCompra>('lotesCompra');
+    const cantidadesPorProducto = new Map<number, number>();
     // Revertir stock a tienda (las ventas salen de tienda)
-    for (const item of anularModal.items) { 
-      const p = productos.find(pr => pr.id === item.productoId); 
+    for (const item of anularModal.items) {
+      cantidadesPorProducto.set(item.productoId, (cantidadesPorProducto.get(item.productoId) || 0) + item.cantidad);
+      const lote = lotes.find(l => l.id === item.loteId);
+      if (lote) {
+        lote.cantidadRestante += item.cantidad;
+        await dbPut('lotesCompra', lote);
+      } else {
+        await dbAdd('lotesCompra', {
+          productoId: item.productoId,
+          cantidad: item.cantidad,
+          cantidadRestante: item.cantidad,
+          precioCompraCUP: item.pep || 0,
+          precioCompraUSD: item.pepUSD || 0,
+          precioVentaCUP: item.precioCUP,
+          precioVentaUSD: item.precioUSD,
+          fecha: anularModal.fecha,
+          proveedor: 'Devolución por anulación',
+          nota: `Stock reintegrado al anular la venta ${anularModal.num}`,
+          destino: 'tienda'
+        } as LoteCompra);
+      }
+    }
+    for (const [productoId, cantidad] of cantidadesPorProducto) {
+      const p = productos.find(pr => pr.id === productoId);
       if (p) {
-        const newStockTienda = (p.stockTienda || 0) + item.cantidad;
+        const newStockTienda = (p.stockTienda || 0) + cantidad;
         const newStockAlmacen = p.stockAlmacen || 0;
         await dbPut('productos', { ...p, stock: newStockTienda + newStockAlmacen, stockTienda: newStockTienda, stockAlmacen: newStockAlmacen });
       }
