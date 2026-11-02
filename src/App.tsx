@@ -3,7 +3,7 @@ import Fuse from 'fuse.js';
 import { Chart, registerables } from 'chart.js';
 import * as XLSX from 'xlsx';
 import {
-  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear, migrateLegacyInventoryLots, transferProductStock, getProductPriceMode,
+  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear, migrateLegacyInventoryLots, transferProductStock, getProductPriceMode, getProductSalePrices, getProductCostPrices,
   getConfig, setConfig, initDefaultConfig,
   Storage, verifyMasterKey, getLicense, saveLicense, isLicenseValid, clearLicense,
   encryptData, decryptData, fmt, fmtDate, fmtDateTime, genVentaNum,
@@ -520,8 +520,12 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   if (filterStatus === 'modo-cup') filtered = filtered.filter(p => getProductPriceMode(p) === 'cup');
   if (filterStatus === 'modo-usd') filtered = filtered.filter(p => getProductPriceMode(p) === 'usd');
 
-  const inversionCUP = filtered.reduce((s, p) => s + (p.stock * p.pep), 0);
-  const inversionUSD = toUSD(inversionCUP, tasa);
+  const inversion = filtered.reduce((totals, p) => {
+    const cost = getProductCostPrices(p, tasa);
+    return { cup: totals.cup + p.stock * cost.cup, usd: totals.usd + p.stock * cost.usd };
+  }, { cup: 0, usd: 0 });
+  const inversionCUP = inversion.cup;
+  const inversionUSD = inversion.usd;
 
   const openNew = () => { setEditItem(null); setForm({ nombre: '', categoria: cfg.categorias?.[0] || '', unidad: cfg.unidades?.[0] || 'Unidad', compraCUP: 0, compraUSD: 0, ventaCUP: 0, ventaUSD: 0, pep: 0, pepUSD: 0, stock: 0, stockTienda: 0, stockAlmacen: 0, min: 0, foto: '', modoPrecio: 'cup' }); setModal(true); };
   const openEdit = (p: Producto) => { setEditItem(p); setForm({ ...p, modoPrecio: getProductPriceMode(p) }); setModal(true); };
@@ -712,8 +716,8 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
               'Venta CUP': p.ventaCUP, 'Venta USD': p.ventaUSD,
               'PEP CUP': p.pep, 'PEP USD': p.pepUSD,
               'Stock Tienda': p.stockTienda, 'Stock Almacén': p.stockAlmacen,
-              'Stock Total': p.stock, 'Inversión CUP': p.stock * p.pep,
-              'Inversión USD': toUSD(p.stock * p.pep, tasa)
+              'Stock Total': p.stock, 'Inversión CUP': p.stock * getProductCostPrices(p, tasa).cup,
+              'Inversión USD': p.stock * getProductCostPrices(p, tasa).usd
             }));
             showToast(result.message, result.success ? 'ok' : 'warn');
           }}>📊 Excel</button>
@@ -721,8 +725,8 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
             const result = await exportSectionToCSV('productos', 'inventario', (p: any) => ({
               id: p.id, nombre: p.nombre, codigo: p.codigo, categoria: p.categoria,
               compraCUP: p.compraCUP, compraUSD: p.compraUSD,
-              ventaCUP: p.ventaCUP, ventaUSD: p.ventaUSD,
-              pep: p.pep, pepUSD: p.pepUSD,
+              ventaCUP: getProductSalePrices(p, tasa).cup, ventaUSD: getProductSalePrices(p, tasa).usd,
+              pep: getProductCostPrices(p, tasa).cup, pepUSD: getProductCostPrices(p, tasa).usd,
               stockTienda: p.stockTienda, stockAlmacen: p.stockAlmacen,
               stock: p.stock
             }));
@@ -755,11 +759,11 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
                 {getProductPriceMode(p) === 'cup' && <span className="ml-1" title="Modo CUP - Precios fijos">🔒</span>}
               </p>
               <div className="flex justify-between items-center mt-2">
-                <span className="text-sm font-bold" style={{ color: 'var(--primary)' }}>{fmt(p.ventaCUP)}</span>
+                <span className="text-sm font-bold" style={{ color: 'var(--primary)' }}>{fmt(getProductSalePrices(p, tasa).cup)}</span>
                 {statusBadge(p)}
               </div>
               <p className="text-xs mt-1">🏪 {p.stockTienda || 0} | 📦 {p.stockAlmacen || 0}</p>
-              <p className="text-xs" style={{ color: 'var(--text2)' }}>Inv: {fmt(p.stock * p.pep)} CUP</p>
+              <p className="text-xs" style={{ color: 'var(--text2)' }}>Inv: {fmt(p.stock * getProductCostPrices(p, tasa).cup)} CUP</p>
               <div className="flex gap-1 mt-2">
                 <button className="btn btn-ghost btn-sm flex-1" onClick={() => openEdit(p)}>✏️</button>
                 <button className="btn btn-warn btn-sm flex-1" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button>
@@ -773,7 +777,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           const lotesProducto = lotes.filter(l => l.productoId === p.id && l.cantidadRestante > 0);
           return (<tr key={p.id}>
             <td>{getProductPriceMode(p) === 'usd' ? <span title="Modo USD - Se actualiza con la tasa" className="text-lg">💲</span> : <span title="Modo CUP - Precios fijos" className="text-lg">🔒</span>}</td>
-            <td className="font-medium">{p.nombre}</td><td>{p.categoria}</td><td className="font-bold" style={{ color: 'var(--ok)' }}>{p.stockTienda || 0}</td><td className="font-bold" style={{ color: 'var(--info)' }}>{p.stockAlmacen || 0}</td><td>{p.stock}</td><td>{fmt(p.pep)}</td><td>{fmt(p.ventaCUP)}</td><td>{fmt(p.stock * p.pep)}</td><td>{fmt(toUSD(p.stock * p.pep, tasa))}</td><td>{lotesProducto.length > 0 ? <button className="btn btn-info btn-sm" onClick={() => setLotesModal(p)}>{lotesProducto.length} lote{lotesProducto.length > 1 ? 's' : ''}</button> : <span className="text-xs" style={{ color: 'var(--text2)' }}>Sin lotes</span>}</td><td>{statusBadge(p)}</td><td><button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️</button> <button className="btn btn-warn btn-sm" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button> <button className="btn btn-ghost btn-sm" onClick={() => del(p)}>🗑️</button></td></tr>);
+            <td className="font-medium">{p.nombre}</td><td>{p.categoria}</td><td className="font-bold" style={{ color: 'var(--ok)' }}>{p.stockTienda || 0}</td><td className="font-bold" style={{ color: 'var(--info)' }}>{p.stockAlmacen || 0}</td><td>{p.stock}</td><td>{fmt(getProductCostPrices(p, tasa).cup)}</td><td>{fmt(getProductSalePrices(p, tasa).cup)}</td><td>{fmt(p.stock * getProductCostPrices(p, tasa).cup)}</td><td>{fmt(p.stock * getProductCostPrices(p, tasa).usd)}</td><td>{lotesProducto.length > 0 ? <button className="btn btn-info btn-sm" onClick={() => setLotesModal(p)}>{lotesProducto.length} lote{lotesProducto.length > 1 ? 's' : ''}</button> : <span className="text-xs" style={{ color: 'var(--text2)' }}>Sin lotes</span>}</td><td>{statusBadge(p)}</td><td><button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️</button> <button className="btn btn-warn btn-sm" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button> <button className="btn btn-ghost btn-sm" onClick={() => del(p)}>🗑️</button></td></tr>);
         })}</tbody></table></div>
       )}
 
@@ -822,7 +826,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
       <Modal open={!!lotesModal} onClose={() => setLotesModal(null)} title="📦 Lotes de Compra" wide>
         {lotesModal && (() => {
           const lotesProducto = lotes.filter(l => l.productoId === lotesModal.id && l.cantidadRestante > 0).sort((a, b) => a.fecha - b.fecha);
-          const totalInvertido = lotesProducto.reduce((s, l) => s + (l.cantidadRestante * l.precioCompraCUP), 0);
+          const totalInvertido = lotesProducto.reduce((s, l) => s + (l.cantidadRestante * getProductCostPrices(lotesModal, tasa, l).cup), 0);
           return (
             <div className="space-y-3">
               <p className="text-sm font-semibold">{lotesModal.nombre}</p>
@@ -837,23 +841,26 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
                         <td>{l.proveedor || '-'}</td>
                         <td>{l.cantidad}</td>
                         <td className="font-bold">{l.cantidadRestante}</td>
-                        <td>{fmt(l.precioCompraCUP)}</td>
+                        <td>{fmt(getProductCostPrices(lotesModal, tasa, l).cup)}</td>
                         <td>{fmt(l.precioCompraUSD)}</td>
-                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(l.precioVentaCUP || lotesModal.ventaCUP)}</td>
-                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(l.precioVentaUSD || lotesModal.ventaUSD)}</td>
+                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(getProductSalePrices(lotesModal, tasa, l).cup)}</td>
+                        <td className="font-semibold" style={{ color: 'var(--ok)' }}>{fmt(getProductSalePrices(lotesModal, tasa, l).usd)}</td>
                         <td>{l.destino === 'tienda' ? '🏪' : '📦'}</td>
-                        <td className="font-semibold">{fmt(l.cantidadRestante * l.precioCompraCUP)}</td>
+                        <td className="font-semibold">{fmt(l.cantidadRestante * getProductCostPrices(lotesModal, tasa, l).cup)}</td>
                         <td>
                           <button 
                             className="btn btn-ghost btn-sm" 
                             onClick={async () => {
-                              const nuevoPrecioVentaCUP = prompt(`Precio de venta CUP para este lote:`, l.precioVentaCUP.toString());
-                              const nuevoPrecioVentaUSD = prompt(`Precio de venta USD para este lote:`, l.precioVentaUSD.toString());
-                              if (nuevoPrecioVentaCUP !== null && nuevoPrecioVentaUSD !== null) {
+                              const modoUSD = getProductPriceMode(lotesModal) === 'usd';
+                              const preciosActuales = getProductSalePrices(lotesModal, tasa, l);
+                              const precioActual = modoUSD ? preciosActuales.usd : preciosActuales.cup;
+                              const nuevoPrecio = prompt(`Precio de venta ${modoUSD ? 'USD' : 'CUP'} para este lote:`, precioActual.toString());
+                              if (nuevoPrecio !== null) {
+                                const precio = parseFloat(nuevoPrecio) || 0;
                                 await dbPut('lotesCompra', {
                                   ...l,
-                                  precioVentaCUP: parseFloat(nuevoPrecioVentaCUP) || 0,
-                                  precioVentaUSD: parseFloat(nuevoPrecioVentaUSD) || 0
+                                  precioVentaCUP: modoUSD ? toCUP(precio, tasa) : precio,
+                                  precioVentaUSD: modoUSD ? precio : toUSD(precio, tasa)
                                 });
                                 showToast('Lote actualizado', 'ok');
                                 load();
@@ -1149,13 +1156,12 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
       if (lotesProducto.length > 0) {
         // Mostrar cada lote como producto separado
         lotesProducto.forEach(lote => {
-          const precioVentaCUP = lote.precioVentaCUP > 0 ? lote.precioVentaCUP : p.ventaCUP;
-          const precioVentaUSD = lote.precioVentaUSD > 0 ? lote.precioVentaUSD : p.ventaUSD;
+          const preciosVenta = getProductSalePrices(p, tasa, lote);
           
           resultado.push({
             ...p,
-            ventaCUP: precioVentaCUP,
-            ventaUSD: precioVentaUSD,
+            ventaCUP: preciosVenta.cup,
+            ventaUSD: preciosVenta.usd,
             stockTienda: lote.cantidadRestante,
             loteId: lote.id,
             loteInfo: `(Lote ${lote.id} - ${fmtDate(lote.fecha)})`
@@ -1168,7 +1174,7 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     });
     
     return resultado;
-  }, [productos, lotes]);
+  }, [productos, lotes, tasa]);
   
   const fuse = new Fuse(productosConLotes, { keys: ['nombre', 'codigo', 'categoria'], threshold: 0.4 });
   const results = search ? fuse.search(search).slice(0, 100).map(r => r.item) : productosConLotes.slice(0, 100);
@@ -1192,6 +1198,8 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     } else {
       // Agregar nuevo item al carrito
       const nombreConLote = p.loteInfo ? `${p.nombre} ${p.loteInfo}` : p.nombre;
+      const lote = lotes.find(l => l.id === p.loteId);
+      const costo = getProductCostPrices(p, tasa, lote);
       setCart([...cart, { 
         productoId: p.id!, 
         nombre: nombreConLote, 
@@ -1202,8 +1210,8 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
         precioUSD: p.ventaUSD, 
         subtotalCUP: p.ventaCUP, 
         subtotalUSD: p.ventaUSD, 
-        pep: p.pep, 
-        pepUSD: p.pepUSD, 
+        pep: costo.cup,
+        pepUSD: costo.usd,
         loteId: p.loteId 
       }]);
     }
@@ -1311,17 +1319,14 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
     
     // Calcular costo real usando FIFO para cada item del carrito
     for (const item of cart) {
-      const pr = productos.find(x => x.id === item.productoId)!;
-      
       // Si el item tiene un loteId específico, usar ese lote
       if (item.loteId) {
         const lote = lotes.find(l => l.id === item.loteId);
         if (lote) {
           if (moneda === 'CUP') {
-            costoTotalCUP += item.cantidad * lote.precioCompraCUP;
+            costoTotalCUP += item.cantidad * item.pep;
           } else {
-            const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
-            costoTotalUSD += item.cantidad * precioUSD;
+            costoTotalUSD += item.cantidad * item.pepUSD;
           }
           
           // Descontar del lote
@@ -1338,10 +1343,9 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
         
         if (lotesProducto.length === 0) {
           if (moneda === 'CUP') {
-            costoTotalCUP += item.cantidad * (pr.pep || 0);
+            costoTotalCUP += item.cantidad * item.pep;
           } else {
-            const precioUSD = pr.pepUSD > 0 ? pr.pepUSD : toUSD(pr.pep || 0, tasa);
-            costoTotalUSD += item.cantidad * precioUSD;
+            costoTotalUSD += item.cantidad * item.pepUSD;
           }
         } else {
           for (const lote of lotesProducto) {
@@ -1350,10 +1354,9 @@ function POS({ cfg }: { cfg: Record<string, any> }) {
             const usarDelLote = Math.min(cantidadRestante, lote.cantidadRestante);
             
             if (moneda === 'CUP') {
-              costoTotalCUP += usarDelLote * lote.precioCompraCUP;
+              costoTotalCUP += usarDelLote * item.pep;
             } else {
-              const precioUSD = lote.precioCompraUSD > 0 ? lote.precioCompraUSD : toUSD(lote.precioCompraCUP, tasa);
-              costoTotalUSD += usarDelLote * precioUSD;
+              costoTotalUSD += usarDelLote * item.pepUSD;
             }
             
             lote.cantidadRestante -= usarDelLote;
@@ -1673,15 +1676,17 @@ function Sales({ cfg }: { cfg: Record<string, any> }) {
         costoItemsCUP += item.cantidad * item.pep;
         costoItemsUSD += item.cantidad * item.pepUSD;
       }
+      const costoCUPAnulado = anularModal.totalCUP > 0 ? costoItemsCUP : 0;
+      const costoUSDAnulado = anularModal.totalUSD > 0 ? costoItemsUSD : 0;
       
       // Restar la venta anulada del cierre
       cierreVenta.ventasIds = cierreVenta.ventasIds.filter(id => id !== anularModal.id);
       cierreVenta.totalVentasCUP -= anularModal.totalCUP;
       cierreVenta.totalVentasUSD -= anularModal.totalUSD;
-      cierreVenta.costoVentasCUP -= costoItemsCUP;
-      cierreVenta.costoVentasUSD -= costoItemsUSD;
-      cierreVenta.gananciaBrutaCUP -= (anularModal.totalCUP - costoItemsCUP);
-      cierreVenta.gananciaBrutaUSD -= (anularModal.totalUSD - costoItemsUSD);
+      cierreVenta.costoVentasCUP -= costoCUPAnulado;
+      cierreVenta.costoVentasUSD -= costoUSDAnulado;
+      cierreVenta.gananciaBrutaCUP -= (anularModal.totalCUP - costoCUPAnulado);
+      cierreVenta.gananciaBrutaUSD -= (anularModal.totalUSD - costoUSDAnulado);
       
       // Restar de caja si fue pago inmediato (no crédito)
       if (anularModal.pagos.efCUP > 0 || anularModal.pagos.tfCUP > 0) {
@@ -2354,7 +2359,7 @@ function Metrics({ cfg }: { cfg: Record<string, any> }) {
   }, 0), 0);
   const gastosTotal = gastosSemana.reduce((s, g) => s + g.montoCUP, 0);
   const utilidad = ganancia - gastosTotal;
-  const inversion = productos.reduce((s, p) => s + (p.stock * p.pep), 0);
+  const inversion = productos.reduce((s, p) => s + (p.stock * getProductCostPrices(p, tasa).cup), 0);
 
   const accionista1 = utilidad * 0.5;
   const accionista2 = utilidad * 0.5;
@@ -2639,7 +2644,7 @@ function Backup({ cfg }: { cfg: Record<string, any> }) {
   const exportExcel = async () => {
     const wb = XLSX.utils.book_new();
     const productos = await dbGetAll<any>('productos');
-    if (productos.length) { XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(productos.map(p => ({ ID: p.id, Código: p.codigo, Nombre: p.nombre, Categoría: p.categoria, 'Compra CUP': p.compraCUP, 'Compra USD': p.compraUSD, 'Venta CUP': p.ventaCUP, 'Venta USD': p.ventaUSD, 'PEP CUP': p.pep, 'PEP USD': p.pepUSD, Stock: p.stock, Mín: p.min, 'Inversión CUP': p.stock * p.pep, 'Inversión USD': toUSD(p.stock * p.pep, cfg.tasa || 350) }))), 'Productos'); }
+    if (productos.length) { XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(productos.map(p => { const sale = getProductSalePrices(p, cfg.tasa || 350); const cost = getProductCostPrices(p, cfg.tasa || 350); return { ID: p.id, Código: p.codigo, Nombre: p.nombre, Categoría: p.categoria, 'Compra CUP': p.compraCUP, 'Compra USD': p.compraUSD, 'Venta CUP': sale.cup, 'Venta USD': sale.usd, 'PEP CUP': cost.cup, 'PEP USD': cost.usd, Stock: p.stock, Mín: p.min, 'Inversión CUP': p.stock * cost.cup, 'Inversión USD': p.stock * cost.usd }; })), 'Productos'); }
     const ventas = await dbGetAll<any>('ventas');
     if (ventas.length) { XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ventas.map(v => ({ Número: v.num, Fecha: fmtDateTime(v.fecha), Cliente: v.clienteNombre, Estado: v.estado, 'Total CUP': v.totalCUP, 'Total USD': v.totalUSD }))), 'Ventas'); }
     const clientes = await dbGetAll<any>('clientes');

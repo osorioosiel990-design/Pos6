@@ -291,7 +291,14 @@ export async function migrateLegacyInventoryLots(): Promise<number> {
     const migrate = () => {
       if (!products || !lots) return;
 
-      const productsWithLots = new Set(lots.map(lote => lote.productoId));
+      const lotsByProductAndLocation = new Map<number, { tienda: number; almacen: number }>();
+      for (const lote of lots) {
+        const cantidades = lotsByProductAndLocation.get(lote.productoId) || { tienda: 0, almacen: 0 };
+        if (lote.destino === 'tienda') cantidades.tienda += Math.max(0, lote.cantidadRestante || 0);
+        else cantidades.almacen += Math.max(0, lote.cantidadRestante || 0);
+        lotsByProductAndLocation.set(lote.productoId, cantidades);
+      }
+
       for (const product of products) {
         const stockTienda = Math.max(0, product.stockTienda ?? product.stock ?? 0);
         const stockAlmacen = Math.max(0, product.stockAlmacen ?? 0);
@@ -307,13 +314,14 @@ export async function migrateLegacyInventoryLots(): Promise<number> {
             modoPrecio
           });
         }
-        if (product.id === undefined || productsWithLots.has(product.id)) continue;
+        if (product.id === undefined) continue;
 
         const fecha = product.creado || Date.now();
+        const lotesExistentes = lotsByProductAndLocation.get(product.id) || { tienda: 0, almacen: 0 };
 
         for (const [destino, cantidad] of [
-          ['tienda', stockTienda],
-          ['almacen', stockAlmacen]
+          ['tienda', Math.max(0, stockTienda - lotesExistentes.tienda)],
+          ['almacen', Math.max(0, stockAlmacen - lotesExistentes.almacen)]
         ] as const) {
           if (cantidad <= 0) continue;
 
@@ -331,6 +339,7 @@ export async function migrateLegacyInventoryLots(): Promise<number> {
             destino
           } satisfies LoteCompra);
           createdLots++;
+          lotesExistentes[destino] += cantidad;
         }
       }
     };
@@ -523,6 +532,40 @@ export function genVentaNum(): string { return 'V-' + Date.now().toString(36).to
 export const toUSD = (cup: number, tasa: number) => tasa > 0 ? cup / tasa : 0;
 export const toCUP = (usd: number, tasa: number) => usd * tasa;
 export const numVal = (v: number | undefined | null) => v === undefined || v === null || v === 0 ? '' : v;
+
+export function getProductSalePrices(
+  product: Pick<Producto, 'modoPrecio' | 'precioFijoCUP' | 'ventaCUP' | 'ventaUSD'>,
+  tasa: number,
+  lote?: Pick<LoteCompra, 'precioVentaCUP' | 'precioVentaUSD'>
+): { cup: number; usd: number } {
+  const precioCUP = lote?.precioVentaCUP || product.ventaCUP || 0;
+  const precioUSD = lote?.precioVentaUSD || product.ventaUSD || 0;
+
+  if (getProductPriceMode(product) === 'usd') {
+    const usd = precioUSD || toUSD(precioCUP, tasa);
+    return { cup: toCUP(usd, tasa), usd };
+  }
+
+  const cup = precioCUP || toCUP(precioUSD, tasa);
+  return { cup, usd: toUSD(cup, tasa) };
+}
+
+export function getProductCostPrices(
+  product: Pick<Producto, 'modoPrecio' | 'precioFijoCUP' | 'pep' | 'pepUSD' | 'compraCUP' | 'compraUSD'>,
+  tasa: number,
+  lote?: Pick<LoteCompra, 'precioCompraCUP' | 'precioCompraUSD'>
+): { cup: number; usd: number } {
+  const costoCUP = lote?.precioCompraCUP || product.pep || product.compraCUP || 0;
+  const costoUSD = lote?.precioCompraUSD || product.pepUSD || product.compraUSD || 0;
+
+  if (getProductPriceMode(product) === 'usd') {
+    const usd = costoUSD || toUSD(costoCUP, tasa);
+    return { cup: toCUP(usd, tasa), usd };
+  }
+
+  const cup = costoCUP || toCUP(costoUSD, tasa);
+  return { cup, usd: toUSD(cup, tasa) };
+}
 
 export function getWeekRange(date: Date = new Date()) {
   const d = new Date(date);
