@@ -795,7 +795,17 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.ventaUSD)} onChange={e => handleVentaUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
           <div className="col-span-2">
             <label className="text-xs font-medium">Modo de Precio</label>
-            <select className="input" value={getProductPriceMode(form)} onChange={e => setForm(f => ({ ...f, modoPrecio: e.target.value as 'cup' | 'usd' }))}>
+            <select className="input" value={getProductPriceMode(form)} onChange={e => setForm(f => {
+              const modoPrecio = e.target.value as 'cup' | 'usd';
+              return modoPrecio === 'usd'
+                ? {
+                    ...f,
+                    modoPrecio,
+                    compraCUP: f.compraUSD ? toCUP(f.compraUSD, tasa) : f.compraCUP,
+                    ventaCUP: f.ventaUSD ? toCUP(f.ventaUSD, tasa) : f.ventaCUP
+                  }
+                : { ...f, modoPrecio };
+            })}>
               <option value="cup">💵 Precios en CUP (fijos, no cambian con la tasa)</option>
               <option value="usd">💵 Precios en USD (CUP se actualiza automáticamente con la tasa)</option>
             </select>
