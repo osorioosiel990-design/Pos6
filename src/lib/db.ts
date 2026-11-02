@@ -546,7 +546,7 @@ export function getProductSalePrices(
     return { cup: toCUP(usd, tasa), usd };
   }
 
-  const cup = precioCUP || toCUP(precioUSD, tasa);
+  const cup = precioCUP;
   return { cup, usd: toUSD(cup, tasa) };
 }
 
@@ -563,7 +563,7 @@ export function getProductCostPrices(
     return { cup: toCUP(usd, tasa), usd };
   }
 
-  const cup = costoCUP || toCUP(costoUSD, tasa);
+  const cup = costoCUP;
   return { cup, usd: toUSD(cup, tasa) };
 }
 
