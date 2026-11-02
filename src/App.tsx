@@ -2730,7 +2730,10 @@ function Settings({ cfg, refreshCfg }: { cfg: Record<string, any>; refreshCfg: (
     // Si está activado, actualizar precios CUP de productos en modo USD
     if (actualizarPrecios && ant !== tasa) {
       const productos = await dbGetAll<Producto>('productos');
-      const productosPorId = new Map(productos.map(producto => [producto.id, producto]));
+      const productosPorId = new Map<number, Producto>();
+      for (const producto of productos) {
+        if (producto.id !== undefined) productosPorId.set(producto.id, producto);
+      }
       for (const p of productos) {
         const modoPrecio = getProductPriceMode(p);
         if (modoPrecio === 'usd' && p.ventaUSD > 0) {
