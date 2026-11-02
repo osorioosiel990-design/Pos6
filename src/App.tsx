@@ -3,7 +3,7 @@ import Fuse from 'fuse.js';
 import { Chart, registerables } from 'chart.js';
 import * as XLSX from 'xlsx';
 import {
-  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear, migrateLegacyInventoryLots, transferProductStock,
+  openDB, dbGetAll, dbAdd, dbPut, dbDelete, dbClear, migrateLegacyInventoryLots, transferProductStock, getProductPriceMode,
   getConfig, setConfig, initDefaultConfig,
   Storage, verifyMasterKey, getLicense, saveLicense, isLicenseValid, clearLicense,
   encryptData, decryptData, fmt, fmtDate, fmtDateTime, genVentaNum,
@@ -517,19 +517,19 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   if (filterStatus === 'no-venta') filtered = filtered.filter(p => p.ventaCUP === 0 && p.ventaUSD === 0);
   if (filterStatus === 'no-stock') filtered = filtered.filter(p => (p.stockTienda || 0) === 0 && (p.stockAlmacen || 0) === 0);
   // Filtros por modo de precio
-  if (filterStatus === 'modo-cup') filtered = filtered.filter(p => p.modoPrecio === 'cup' || !p.modoPrecio);
-  if (filterStatus === 'modo-usd') filtered = filtered.filter(p => p.modoPrecio === 'usd');
+  if (filterStatus === 'modo-cup') filtered = filtered.filter(p => getProductPriceMode(p) === 'cup');
+  if (filterStatus === 'modo-usd') filtered = filtered.filter(p => getProductPriceMode(p) === 'usd');
 
   const inversionCUP = filtered.reduce((s, p) => s + (p.stock * p.pep), 0);
   const inversionUSD = toUSD(inversionCUP, tasa);
 
   const openNew = () => { setEditItem(null); setForm({ nombre: '', categoria: cfg.categorias?.[0] || '', unidad: cfg.unidades?.[0] || 'Unidad', compraCUP: 0, compraUSD: 0, ventaCUP: 0, ventaUSD: 0, pep: 0, pepUSD: 0, stock: 0, stockTienda: 0, stockAlmacen: 0, min: 0, foto: '', modoPrecio: 'cup' }); setModal(true); };
-  const openEdit = (p: Producto) => { setEditItem(p); setForm({ ...p }); setModal(true); };
+  const openEdit = (p: Producto) => { setEditItem(p); setForm({ ...p, modoPrecio: getProductPriceMode(p) }); setModal(true); };
 
   // Funciones inteligentes de precios según modoPrecio
   const handleVentaCUP = (val: number) => {
     setForm(f => {
-      const modo = f.modoPrecio || 'cup';
+      const modo = getProductPriceMode(f);
       if (modo === 'cup') {
         // Modo CUP: el CUP es fijo, calcular USD
         return { ...f, ventaCUP: val, ventaUSD: toUSD(val, tasa) };
@@ -542,7 +542,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   
   const handleVentaUSD = (val: number) => {
     setForm(f => {
-      const modo = f.modoPrecio || 'cup';
+      const modo = getProductPriceMode(f);
       if (modo === 'usd') {
         // Modo USD: el USD es fijo, calcular CUP automáticamente
         return { ...f, ventaUSD: val, ventaCUP: toCUP(val, tasa) };
@@ -555,7 +555,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   
   const handleCompraCUP = (val: number) => {
     setForm(f => {
-      const modo = f.modoPrecio || 'cup';
+      const modo = getProductPriceMode(f);
       if (modo === 'cup') {
         return { ...f, compraCUP: val, compraUSD: toUSD(val, tasa) };
       } else {
@@ -566,7 +566,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
   
   const handleCompraUSD = (val: number) => {
     setForm(f => {
-      const modo = f.modoPrecio || 'cup';
+      const modo = getProductPriceMode(f);
       if (modo === 'usd') {
         return { ...f, compraUSD: val, compraCUP: toCUP(val, tasa) };
       } else {
@@ -751,8 +751,8 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
               <h4 className="font-semibold text-sm mt-2 truncate">{p.nombre}</h4>
               <p className="text-xs" style={{ color: 'var(--text2)' }}>
                 {p.categoria}
-                {p.modoPrecio === 'usd' && <span className="ml-1" title="Modo USD - Se actualiza con la tasa">💲</span>}
-                {(p.modoPrecio === 'cup' || !p.modoPrecio) && <span className="ml-1" title="Modo CUP - Precios fijos">🔒</span>}
+                {getProductPriceMode(p) === 'usd' && <span className="ml-1" title="Modo USD - Se actualiza con la tasa">💲</span>}
+                {getProductPriceMode(p) === 'cup' && <span className="ml-1" title="Modo CUP - Precios fijos">🔒</span>}
               </p>
               <div className="flex justify-between items-center mt-2">
                 <span className="text-sm font-bold" style={{ color: 'var(--primary)' }}>{fmt(p.ventaCUP)}</span>
@@ -772,7 +772,7 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
         <div className="card table-wrap"><table><thead><tr><th>Modo</th><th>Producto</th><th>Cat.</th><th>🏪 Tienda</th><th>📦 Almacén</th><th>Total</th><th>PEP CUP</th><th>Venta CUP</th><th>Inv CUP</th><th>Inv USD</th><th>Lotes</th><th>Estado</th><th></th></tr></thead><tbody>{filtered.map(p => {
           const lotesProducto = lotes.filter(l => l.productoId === p.id && l.cantidadRestante > 0);
           return (<tr key={p.id}>
-            <td>{p.modoPrecio === 'usd' ? <span title="Modo USD - Se actualiza con la tasa" className="text-lg">💲</span> : <span title="Modo CUP - Precios fijos" className="text-lg">🔒</span>}</td>
+            <td>{getProductPriceMode(p) === 'usd' ? <span title="Modo USD - Se actualiza con la tasa" className="text-lg">💲</span> : <span title="Modo CUP - Precios fijos" className="text-lg">🔒</span>}</td>
             <td className="font-medium">{p.nombre}</td><td>{p.categoria}</td><td className="font-bold" style={{ color: 'var(--ok)' }}>{p.stockTienda || 0}</td><td className="font-bold" style={{ color: 'var(--info)' }}>{p.stockAlmacen || 0}</td><td>{p.stock}</td><td>{fmt(p.pep)}</td><td>{fmt(p.ventaCUP)}</td><td>{fmt(p.stock * p.pep)}</td><td>{fmt(toUSD(p.stock * p.pep, tasa))}</td><td>{lotesProducto.length > 0 ? <button className="btn btn-info btn-sm" onClick={() => setLotesModal(p)}>{lotesProducto.length} lote{lotesProducto.length > 1 ? 's' : ''}</button> : <span className="text-xs" style={{ color: 'var(--text2)' }}>Sin lotes</span>}</td><td>{statusBadge(p)}</td><td><button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️</button> <button className="btn btn-warn btn-sm" onClick={() => { setMermaModal(p); setMermaQty(0); }}>⚠️</button> <button className="btn btn-ghost btn-sm" onClick={() => del(p)}>🗑️</button></td></tr>);
         })}</tbody></table></div>
       )}
@@ -791,12 +791,12 @@ function Inventory({ cfg }: { cfg: Record<string, any> }) {
           <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.ventaUSD)} onChange={e => handleVentaUSD(e.target.value === '' ? 0 : +e.target.value)} /></div>
           <div className="col-span-2">
             <label className="text-xs font-medium">Modo de Precio</label>
-            <select className="input" value={form.modoPrecio || 'cup'} onChange={e => setForm(f => ({ ...f, modoPrecio: e.target.value as 'cup' | 'usd' }))}>
+            <select className="input" value={getProductPriceMode(form)} onChange={e => setForm(f => ({ ...f, modoPrecio: e.target.value as 'cup' | 'usd' }))}>
               <option value="cup">💵 Precios en CUP (fijos, no cambian con la tasa)</option>
               <option value="usd">💵 Precios en USD (CUP se actualiza automáticamente con la tasa)</option>
             </select>
             <p className="text-xs mt-1" style={{ color: 'var(--text2)' }}>
-              {form.modoPrecio === 'usd' ? '📈 Al cambiar la tasa, los precios CUP se actualizarán automáticamente' : '🔒 Los precios CUP no cambiarán aunque varíe la tasa'}
+              {getProductPriceMode(form) === 'usd' ? '📈 Al cambiar la tasa, los precios CUP se actualizarán automáticamente' : '🔒 Los precios CUP no cambiarán aunque varíe la tasa'}
             </p>
           </div>
           <div className="col-span-2"><label className="text-xs font-medium">Foto</label><input type="file" accept="image/*" className="input" onChange={handleFoto} />{form.foto && <img src={form.foto} className="mt-2 w-20 h-20 object-cover rounded" />}</div>
@@ -991,8 +991,8 @@ function Purchases({ cfg }: { cfg: Record<string, any> }) {
             <p className="text-xs font-semibold mb-2" style={{ color: 'var(--primary)' }}>💰 Precio de Venta para este Lote (opcional)</p>
             <p className="text-xs mb-3" style={{ color: 'var(--text2)' }}>Si dejas en 0, se usará el precio de venta actual del producto</p>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="text-xs font-medium">Venta CUP</label><input type="number" className="input" value={numVal(form.precioVentaCUP)} onChange={e => setForm(f => ({ ...f, precioVentaCUP: e.target.value === '' ? 0 : +e.target.value, precioVentaUSD: producto?.modoPrecio === 'usd' ? toUSD(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaUSD }))} /></div>
-              <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.precioVentaUSD)} onChange={e => setForm(f => ({ ...f, precioVentaUSD: e.target.value === '' ? 0 : +e.target.value, precioVentaCUP: producto?.modoPrecio === 'cup' ? toCUP(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaCUP }))} /></div>
+              <div><label className="text-xs font-medium">Venta CUP</label><input type="number" className="input" value={numVal(form.precioVentaCUP)} onChange={e => setForm(f => ({ ...f, precioVentaCUP: e.target.value === '' ? 0 : +e.target.value, precioVentaUSD: producto && getProductPriceMode(producto) === 'usd' ? toUSD(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaUSD }))} /></div>
+              <div><label className="text-xs font-medium">Venta USD</label><input type="number" className="input" value={numVal(form.precioVentaUSD)} onChange={e => setForm(f => ({ ...f, precioVentaUSD: e.target.value === '' ? 0 : +e.target.value, precioVentaCUP: producto && getProductPriceMode(producto) === 'cup' ? toCUP(e.target.value === '' ? 0 : +e.target.value, tasa) : f.precioVentaCUP }))} /></div>
             </div>
           </div>
           <div><label className="text-xs font-medium">Nota</label><input className="input" value={form.nota} onChange={e => setForm(f => ({ ...f, nota: e.target.value }))} /></div>
@@ -2730,10 +2730,21 @@ function Settings({ cfg, refreshCfg }: { cfg: Record<string, any>; refreshCfg: (
     // Si está activado, actualizar precios CUP de productos en modo USD
     if (actualizarPrecios && ant !== tasa) {
       const productos = await dbGetAll<Producto>('productos');
+      const productosPorId = new Map(productos.map(producto => [producto.id, producto]));
       for (const p of productos) {
-        // Solo actualizar si el producto está en modo USD (precios regidos por el dólar)
-        if (p.modoPrecio === 'usd' && p.ventaUSD > 0) {
-          await dbPut('productos', { ...p, ventaCUP: toCUP(p.ventaUSD, tasa) });
+        const modoPrecio = getProductPriceMode(p);
+        if (modoPrecio === 'usd' && p.ventaUSD > 0) {
+          await dbPut('productos', { ...p, modoPrecio: 'usd', ventaCUP: toCUP(p.ventaUSD, tasa) });
+        } else if (p.modoPrecio !== modoPrecio) {
+          await dbPut('productos', { ...p, modoPrecio });
+        }
+      }
+      const lotes = await dbGetAll<LoteCompra>('lotesCompra');
+      for (const lote of lotes) {
+        const producto = productosPorId.get(lote.productoId);
+        const precioUSD = lote.precioVentaUSD || producto?.ventaUSD || 0;
+        if (producto && getProductPriceMode(producto) === 'usd' && precioUSD > 0) {
+          await dbPut('lotesCompra', { ...lote, precioVentaCUP: toCUP(precioUSD, tasa) });
         }
       }
       showToast('Precios actualizados según nueva tasa', 'ok');

@@ -11,11 +11,19 @@ export interface Producto {
   stockTienda: number; // Stock en tienda (disponible para venta)
   stockAlmacen: number; // Stock en almacén (reserva)
   min: number; foto: string; creado: number;
+  // Compatibilidad con POS5
+  monedaPrimaria?: 'cup' | 'usd' | null;
+  precioFijoCUP?: boolean;
+  precioFijoUSD?: boolean;
   // Nuevo: modo de precio automático
   modoPrecio?: 'cup' | 'usd'; // Si es 'cup', los precios CUP son fijos. Si es 'usd', los USD son fijos y CUP se actualiza con la tasa
   loteActual?: number;
   fechaVencimiento?: number;
   codigoBarras?: string;
+}
+
+export function getProductPriceMode(product: Pick<Producto, 'modoPrecio' | 'precioFijoCUP'>): 'cup' | 'usd' {
+  return product.modoPrecio ?? (product.precioFijoCUP === true ? 'cup' : 'usd');
 }
 
 export interface LoteCompra {
@@ -287,12 +295,16 @@ export async function migrateLegacyInventoryLots(): Promise<number> {
       for (const product of products) {
         const stockTienda = Math.max(0, product.stockTienda ?? product.stock ?? 0);
         const stockAlmacen = Math.max(0, product.stockAlmacen ?? 0);
-        if (product.stockTienda === undefined || product.stockAlmacen === undefined) {
+        const modoPrecio = getProductPriceMode(product);
+        if (product.stockTienda === undefined ||
+            product.stockAlmacen === undefined ||
+            product.modoPrecio !== modoPrecio) {
           productsStore.put({
             ...product,
             stock: stockTienda + stockAlmacen,
             stockTienda,
-            stockAlmacen
+            stockAlmacen,
+            modoPrecio
           });
         }
         if (product.id === undefined || productsWithLots.has(product.id)) continue;
